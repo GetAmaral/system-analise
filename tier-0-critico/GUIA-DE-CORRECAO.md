@@ -2,6 +2,8 @@
 
 **O que e este documento:** Um guia pratico, na ordem certa, para fechar as 5 portas abertas do seu sistema antes de lancar. Cada passo explica o PORQUE, o QUE fazer, e COMO fazer.
 
+**IMPORTANTE:** Este guia e para VOCE executar manualmente. Ninguem vai alterar nada automaticamente. Leia tudo antes de comecar, entenda o que cada passo faz, e so execute quando se sentir confortavel.
+
 **Tempo estimado:** ~2-3 horas se seguir na ordem.
 
 **Ferramentas necessarias:**
@@ -306,7 +308,7 @@ A anon key nao e secreta (e publica por design no Supabase), mas estar numa migr
 
 ---
 
-## PASSO 4 — Proteger `vip-google-connect`
+## PASSO 4 — Desabilitar `vip-google-connect`
 
 ### Por que?
 Qualquer pessoa que saiba um numero de telefone pode:
@@ -314,122 +316,56 @@ Qualquer pessoa que saiba um numero de telefone pode:
 - Ver se qualquer telefone tem Google conectado
 - Desconectar o Google de qualquer telefone
 
-### Decisao necessaria: VIP Calendar ainda e usado?
+### Situacao atual
+VIP Calendar **NAO esta em uso**. As tabelas (`calendar_vip`, `vip_google_connections`) ficam quietas no banco — nao causam problema estando la. O que causa problema e a **edge function** que esta acessivel publicamente.
 
-**Se NAO (recomendado se nao tem VIPs ativos):**
-- Deletar tudo: funcao, tabelas, RPCs
-- Caminho mais simples e seguro
+### Estrategia: desabilitar a funcao, manter tabelas
+Nao vamos deletar tabelas nem RPCs — isso poderia causar efeitos colaterais desnecessarios. Vamos apenas **trancar a porta**: desabilitar a edge function para que ninguem consiga chamar de fora.
 
-**Se SIM:**
-- Adicionar autenticacao via token temporario (mais complexo)
+### O que e uma edge function "desabilitada"?
+Quando voce remove a funcao do Supabase (via deploy), a URL dela para de funcionar. Quem tentar acessar recebe erro 404 (nao encontrado). As tabelas e funcoes SQL continuam existindo no banco, so nao tem mais "porta de entrada" pela internet.
 
-### OPCAO A — Remover VIP (recomendado)
+### Como fazer
 
-**4A.1 — Remover config**
-Delete de `config.toml`:
+**4.1 — Remover do config.toml**
+
+Abra o arquivo `/home/totalAssistente/site/supabase/config.toml`.
+Encontre e DELETE estas 2 linhas:
 ```toml
 [functions.vip-google-connect]
 verify_jwt = false
 ```
 
-**4A.2 — Deletar funcao**
+**O que isso faz:** Diz ao Supabase para nao mais reconhecer essa funcao. No proximo deploy, ela sera removida da nuvem.
+
+**4.2 — Deletar a pasta da funcao**
+
+No terminal:
 ```bash
 rm -rf /home/totalAssistente/site/supabase/functions/vip-google-connect
 ```
 
-**4A.3 — Limpar banco (SQL Editor do Supabase)**
-```sql
--- Remove RPCs
-DROP FUNCTION IF EXISTS public.store_vip_google_connection(text, text, text, timestamptz, text);
-DROP FUNCTION IF EXISTS public.get_vip_connection_status(text);
-DROP FUNCTION IF EXISTS public.get_vip_google_tokens(text);
+**O que isso faz:** Remove o codigo-fonte da funcao. Sem codigo, o deploy nao tem o que publicar.
 
--- Remove tabelas (CUIDADO: perda de dados de VIPs existentes)
--- So execute se tem certeza que nao ha VIPs ativos
--- Verifique primeiro:
-SELECT COUNT(*) FROM vip_google_connections WHERE is_connected = true;
-SELECT COUNT(*) FROM calendar_vip;
-
--- Se ambos retornam 0, pode dropar:
-DROP TABLE IF EXISTS vip_google_connections CASCADE;
-DROP TABLE IF EXISTS calendar_vip CASCADE;
-```
-
-**4A.4 — Criar migration documentando**
+**4.3 — Fazer deploy**
 ```bash
-npx supabase migration new remove_vip_calendar
-```
-Conteudo:
-```sql
--- Remove VIP Calendar (TIER 0 security fix: zero authentication)
-DROP FUNCTION IF EXISTS public.store_vip_google_connection(text, text, text, timestamptz, text);
-DROP FUNCTION IF EXISTS public.get_vip_connection_status(text);
-DROP FUNCTION IF EXISTS public.get_vip_google_tokens(text);
-DROP TABLE IF EXISTS vip_google_connections CASCADE;
-DROP TABLE IF EXISTS calendar_vip CASCADE;
+cd /home/totalAssistente/site
+npx supabase functions deploy
 ```
 
-### OPCAO B — Proteger com token (se VIP continuar)
+**O que isso faz:** Envia as alteracoes para o Supabase. Como `vip-google-connect` nao existe mais no codigo nem no config, ela e removida da nuvem.
 
-Se voce precisar manter VIP, o conceito e:
-
-1. Bot WhatsApp envia link com token unico: `?phone=5543...&token=abc123`
-2. Edge function valida que o token existe e nao expirou
-3. Token armazenado em tabela `vip_auth_tokens` com TTL de 15 minutos
-
-**4B.1 — Criar tabela de tokens (SQL Editor):**
-```sql
-CREATE TABLE public.vip_auth_tokens (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  phone TEXT NOT NULL,
-  token TEXT NOT NULL UNIQUE DEFAULT encode(gen_random_bytes(32), 'hex'),
-  expires_at TIMESTAMPTZ NOT NULL DEFAULT (now() + interval '15 minutes'),
-  used BOOLEAN DEFAULT false,
-  created_at TIMESTAMPTZ DEFAULT now()
-);
-
--- Apenas service_role pode acessar
-ALTER TABLE vip_auth_tokens ENABLE ROW LEVEL SECURITY;
--- Sem policies publicas = so service_role acessa
+**4.4 — Verificar**
+```bash
+curl -s -o /dev/null -w "%{http_code}" \
+  "https://ldbdtakddxznfridsarn.supabase.co/functions/v1/vip-google-connect?action=status&phone=5543999999999"
 ```
+**Esperado:** `404` (funcao nao encontrada — porta fechada!).
 
-**4B.2 — Adicionar validacao no inicio de CADA action da edge function:**
-```typescript
-// Validar token em todas as acoes (auth, status, disconnect)
-const token = url.searchParams.get('token');
-if (!token) {
-  return new Response(JSON.stringify({ error: 'Token obrigatório' }), {
-    status: 401,
-    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-  });
-}
-
-// Verificar token no banco
-const { data: tokenData, error: tokenError } = await supabase
-  .from('vip_auth_tokens')
-  .select('*')
-  .eq('token', token)
-  .eq('phone', normalizedPhone)
-  .eq('used', false)
-  .gt('expires_at', new Date().toISOString())
-  .single();
-
-if (tokenError || !tokenData) {
-  return new Response(JSON.stringify({ error: 'Token inválido ou expirado' }), {
-    status: 401,
-    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-  });
-}
-
-// Marcar token como usado (single-use)
-await supabase
-  .from('vip_auth_tokens')
-  .update({ used: true })
-  .eq('id', tokenData.id);
-```
-
-**4B.3 — No workflow N8N do bot, quando usuario VIP pede para conectar Google:**
-O bot deve criar um token na tabela e enviar o link com o token incluso.
+### O que NAO estamos mexendo (e por que)
+- **Tabelas `calendar_vip` e `vip_google_connections`:** Ficam no banco. Nao atrapalham nada e nao tem porta de entrada agora.
+- **RPCs `store_vip_google_connection`, `get_vip_connection_status`, `get_vip_google_tokens`:** Ficam no banco. Sem a edge function, ninguem de fora consegue chama-las (elas precisam de `service_role` para executar).
+- Se um dia voce quiser usar VIP de novo, basta recriar a edge function COM autenticacao.
 
 ---
 
