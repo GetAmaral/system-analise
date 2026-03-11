@@ -1,15 +1,31 @@
-# GUIA DE CORRECAO TIER 0 — Passo a Passo para Iniciantes
+# GUIA DE CORRECAO TIER 0 — Passo a Passo (v2 - Corrigido)
 
 **O que e este documento:** Um guia pratico, na ordem certa, para fechar as 5 portas abertas do seu sistema antes de lancar. Cada passo explica o PORQUE, o QUE fazer, e COMO fazer.
 
 **IMPORTANTE:** Este guia e para VOCE executar manualmente. Ninguem vai alterar nada automaticamente. Leia tudo antes de comecar, entenda o que cada passo faz, e so execute quando se sentir confortavel.
 
-**Tempo estimado:** ~2-3 horas se seguir na ordem.
+**Tempo estimado:** ~3-4 horas se seguir na ordem.
 
 **Ferramentas necessarias:**
 - Acesso ao **Supabase Dashboard** (https://supabase.com/dashboard)
 - Editor de codigo (VS Code, Cursor, etc.)
 - Terminal com acesso ao servidor
+- **Acesso ao painel N8N** (para Passo 5)
+
+---
+
+> **CHANGELOG v2 (2026-03-11 — Sherlock):**
+>
+> - **[CRITICO]** Passo 5 agora inclui atualizacao obrigatoria de 5 nodes em 2 workflows N8N que passavam a chave antiga hardcoded
+> - **[CRITICO]** Passo 5 agora inclui criacao da funcao `decrypt_token_json` que os workflows N8N chamam via RPC (nao existia nas migrations)
+> - **[CRITICO]** Passo 5 reordenado: agora desativa workflows N8N ANTES de re-criptografar (evita corrida de condicao)
+> - **[ALTA]** Passo 1 CORS: adicionadas funcoes faltantes (`kiwify-webhook`, `unlink-phone`)
+> - **[ALTA]** Passo 1 CORS: adicionado aviso sobre URLs de desenvolvimento e template especifico para webhooks com headers extras
+> - **[ALTA]** Passo 1 CORS: template especifico para `hotmart-webhook` (header `x-hotmart-hottok`) e `google-calendar-webhook` (headers `x-goog-*`)
+> - **[MEDIA]** Passo 3: adicionada explicacao de que hotmart-webhook faz INSERT em profiles e o trigger dispara, mas nao ha dependencia
+> - **[MEDIA]** Passo 5: re-criptografia agora em batches de 100 (evita timeout)
+> - **[MEDIA]** Passo 6: adicionados testes para workflows N8N (Calendar WebHooks + Lembretes)
+> - Removidas funcoes da lista CORS que serao deletadas (create-user-admin, sync-profile-to-auth, vip-google-connect)
 
 ---
 
@@ -30,6 +46,9 @@ Quando seu site (`totalassistente.com.br`) faz um request para sua API, o navega
 ### O que e criptografia e por que a chave importa?
 Os tokens Google dos seus usuarios sao criptografados antes de salvar no banco. Criptografia funciona assim: voce pega o dado + uma chave secreta → gera texto embaralhado. Para desembaralhar, precisa da mesma chave. Se a chave esta no codigo-fonte, qualquer pessoa com acesso ao codigo pode desembaralhar TODOS os tokens.
 
+### O que e o N8N e por que importa aqui?
+O N8N e sua plataforma de automacao (workflows). Alguns workflows fazem chamadas diretas ao banco Supabase para descriptografar tokens Google. Se a chave de criptografia mudar e o N8N nao for atualizado, esses workflows param de funcionar.
+
 ---
 
 ## ORDEM DE EXECUCAO
@@ -37,12 +56,12 @@ Os tokens Google dos seus usuarios sao criptografados antes de salvar no banco. 
 Siga esta ordem. Cada passo depende do anterior estar feito.
 
 ```
-PASSO 1: Fechar CORS em todas edge functions          (~15 min)
+PASSO 1: Fechar CORS em todas edge functions          (~20 min)
 PASSO 2: Eliminar create-user-admin                    (~10 min)
 PASSO 3: Eliminar sync-profile-to-auth + trigger       (~20 min)
 PASSO 4: Proteger ou eliminar vip-google-connect       (~15 min)
-PASSO 5: Rotacionar chave de criptografia              (~30 min)
-PASSO 6: Verificar que tudo funciona                   (~30 min)
+PASSO 5: Rotacionar chave de criptografia + N8N        (~60 min)  ← ATUALIZADO
+PASSO 6: Verificar que tudo funciona                   (~30 min)  ← ATUALIZADO
 ```
 
 ---
@@ -57,7 +76,7 @@ Quando voce abre `totalassistente.com.br` e o site faz um request para a API do 
 
 **IMPORTANTE:** CORS so protege navegadores. Um hacker usando `curl` no terminal ignora CORS. Por isso CORS e uma camada EXTRA, nao a unica protecao.
 
-### Como fazer
+### Como fazer — Funcoes PADRAO (maioria)
 
 Cada edge function tem este trecho no comeco do arquivo:
 
@@ -76,6 +95,9 @@ Troque por:
 const ALLOWED_ORIGINS = [
   'https://totalassistente.com.br',
   'https://www.totalassistente.com.br',
+  // Se voce usa um ambiente de preview/dev, adicione aqui:
+  // 'http://localhost:3000',
+  // 'https://ignorethissiteavtotal.lovable.app',
 ];
 
 function getCorsHeaders(req: Request) {
@@ -116,42 +138,91 @@ serve(async (req) => {
 });
 ```
 
+### Como fazer — `hotmart-webhook` (TEMPLATE ESPECIFICO)
+
+O hotmart-webhook precisa do header extra `x-hotmart-hottok`. Use este template:
+
+```typescript
+const ALLOWED_ORIGINS = [
+  'https://totalassistente.com.br',
+  'https://www.totalassistente.com.br',
+];
+
+function getCorsHeaders(req: Request) {
+  const origin = req.headers.get('Origin') || '';
+  return {
+    'Access-Control-Allow-Origin': ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0],
+    'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-hotmart-hottok',
+  };
+}
+```
+
+### Como fazer — `google-calendar-webhook` (TEMPLATE ESPECIFICO)
+
+O google-calendar-webhook precisa dos headers do Google. Use este template:
+
+```typescript
+const ALLOWED_ORIGINS = [
+  'https://totalassistente.com.br',
+  'https://www.totalassistente.com.br',
+];
+
+function getCorsHeaders(req: Request) {
+  const origin = req.headers.get('Origin') || '';
+  return {
+    'Access-Control-Allow-Origin': ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0],
+    'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-goog-channel-id, x-goog-resource-id, x-goog-resource-state',
+  };
+}
+```
+
 ### Quais arquivos editar
 
 Editar TODOS estes arquivos em `/home/totalAssistente/site/supabase/functions/`:
 
+**Template PADRAO:**
 ```
 check-email-exists/index.ts
 create-checkout/index.ts
-create-user-admin/index.ts         ← sera deletado no passo 2, mas edite por seguranca
 delete-account/index.ts
 fetch-market-data/index.ts
 google-calendar/index.ts
 google-calendar-sync-cron/index.ts
-google-calendar-webhook/index.ts
-hotmart-webhook/index.ts
+kiwify-webhook/index.ts
 start-otp-login/index.ts
-sync-profile-to-auth/index.ts      ← sera deletado no passo 3, mas edite por seguranca
+unlink-phone/index.ts
 verify-otp-secure/index.ts
-vip-google-connect/index.ts
 ```
 
-### Excecoes (NAO restringir CORS nestes)
+**Template HOTMART (com x-hotmart-hottok):**
+```
+hotmart-webhook/index.ts
+```
 
-- **`hotmart-webhook`**: A Hotmart chama de servidores dela, nao de um navegador. CORS nao se aplica, mas nao atrapalha ter. Mantenha o CORS restrito mesmo assim.
-- **`google-calendar-webhook`**: O Google chama de servidores dele. Mesmo caso.
+**Template GOOGLE WEBHOOK (com x-goog-*):**
+```
+google-calendar-webhook/index.ts
+```
+
+**NAO editar (serao deletadas nos passos seguintes):**
+```
+create-user-admin/index.ts        ← deletada no passo 2
+sync-profile-to-auth/index.ts     ← deletada no passo 3
+vip-google-connect/index.ts       ← deletada no passo 4
+```
+
+> **AVISO SOBRE URLs DE DESENVOLVIMENTO:**
+> Se voce usa `localhost`, Lovable preview, ou qualquer outro dominio para desenvolvimento,
+> adicione esses dominios no array `ALLOWED_ORIGINS`. Sem isso, o CORS vai bloquear seus
+> requests durante o desenvolvimento. Voce pode remover depois de lancar.
+
+### Nota sobre webhooks (hotmart, google-calendar-webhook, kiwify)
+CORS so afeta **navegadores**. Webhooks sao chamados por servidores (Hotmart, Google, Kiwify), entao CORS nao os bloqueia. Mas aplicar CORS restrito neles nao atrapalha e e boa pratica.
 
 ### Como fazer deploy
 Apos editar todos os arquivos:
 ```bash
 cd /home/totalAssistente/site
-npx supabase functions deploy check-email-exists
-npx supabase functions deploy create-checkout
-# ... repetir para cada funcao editada
-```
-
-Ou deploy de todas de uma vez:
-```bash
 npx supabase functions deploy
 ```
 
@@ -163,10 +234,10 @@ npx supabase functions deploy
 Esta funcao cria usuarios com email confirmado, sem exigir nenhuma autenticacao. Qualquer pessoa pode criar contas falsas.
 
 ### Quem usa esta funcao?
-**Ninguem diretamente.** Investiguei:
+**Ninguem.** Investigacao completa:
 - O frontend NAO chama esta funcao (0 resultados no `src/`)
-- O hotmart-webhook NAO chama esta funcao (0 resultados)
-- Nenhum workflow N8N referencia ela
+- O hotmart-webhook NAO chama esta funcao (verificado no codigo-fonte)
+- **Nenhum workflow N8N referencia ela** (0 resultados nos 8 JSONs de producao)
 
 A funcao e um resquicio de desenvolvimento. Pode ser removida com seguranca.
 
@@ -217,6 +288,11 @@ Mas deletar e melhor. Codigo morto e divida tecnica.
 ### Por que?
 Esta funcao lista TODOS os usuarios do sistema (emails, IDs) sem autenticacao. Alem disso, e chamada automaticamente por um trigger toda vez que um profile e criado.
 
+### Quem usa esta funcao?
+**Ninguem diretamente.** Investigacao completa:
+- O frontend NAO chama esta funcao (0 resultados no `src/`)
+- **Nenhum workflow N8N referencia ela** (0 resultados nos 8 JSONs de producao)
+
 ### ATENCAO — Tem um trigger no banco!
 Este e o detalhe mais importante. Existe um trigger SQL que chama esta funcao automaticamente:
 
@@ -239,6 +315,14 @@ O proposito original era: "quando um profile e criado (por exemplo, via Hotmart 
 2. Quando Hotmart cria profile → o usuario ja vai se cadastrar depois e vincular por phone/email
 
 O sync reverso (profile → auth.users) e uma redundancia que cria mais problemas do que resolve.
+
+> **NOTA v2 — Hotmart Webhook e o Trigger:**
+> O `hotmart-webhook` FAZ INSERT na tabela `profiles` quando um comprador novo nao tem profile
+> (verificado no codigo-fonte, linhas 291-309). Isso dispara o trigger `on_profile_created_sync_auth`.
+>
+> **Isso NAO causa problema ao remover o trigger.** O hotmart-webhook nao depende do resultado
+> do trigger — ele so precisa do profile + subscription. O usuario criara sua conta `auth.users`
+> no primeiro login pelo site. A remocao do trigger e SEGURA.
 
 ### Como fazer
 
@@ -319,11 +403,10 @@ Qualquer pessoa que saiba um numero de telefone pode:
 ### Situacao atual
 VIP Calendar **NAO esta em uso**. As tabelas (`calendar_vip`, `vip_google_connections`) ficam quietas no banco — nao causam problema estando la. O que causa problema e a **edge function** que esta acessivel publicamente.
 
+**Verificacao N8N:** Nenhum workflow N8N referencia esta funcao (0 resultados nos 8 JSONs).
+
 ### Estrategia: desabilitar a funcao, manter tabelas
 Nao vamos deletar tabelas nem RPCs — isso poderia causar efeitos colaterais desnecessarios. Vamos apenas **trancar a porta**: desabilitar a edge function para que ninguem consiga chamar de fora.
-
-### O que e uma edge function "desabilitada"?
-Quando voce remove a funcao do Supabase (via deploy), a URL dela para de funcionar. Quem tentar acessar recebe erro 404 (nao encontrado). As tabelas e funcoes SQL continuam existindo no banco, so nao tem mais "porta de entrada" pela internet.
 
 ### Como fazer
 
@@ -336,8 +419,6 @@ Encontre e DELETE estas 2 linhas:
 verify_jwt = false
 ```
 
-**O que isso faz:** Diz ao Supabase para nao mais reconhecer essa funcao. No proximo deploy, ela sera removida da nuvem.
-
 **4.2 — Deletar a pasta da funcao**
 
 No terminal:
@@ -345,15 +426,11 @@ No terminal:
 rm -rf /home/totalAssistente/site/supabase/functions/vip-google-connect
 ```
 
-**O que isso faz:** Remove o codigo-fonte da funcao. Sem codigo, o deploy nao tem o que publicar.
-
 **4.3 — Fazer deploy**
 ```bash
 cd /home/totalAssistente/site
 npx supabase functions deploy
 ```
-
-**O que isso faz:** Envia as alteracoes para o Supabase. Como `vip-google-connect` nao existe mais no codigo nem no config, ela e removida da nuvem.
 
 **4.4 — Verificar**
 ```bash
@@ -369,7 +446,11 @@ curl -s -o /dev/null -w "%{http_code}" \
 
 ---
 
-## PASSO 5 — Rotacionar Chave de Criptografia
+## PASSO 5 — Rotacionar Chave de Criptografia + Atualizar N8N
+
+> **ATENCAO v2:** Este passo foi SIGNIFICATIVAMENTE reescrito. A versao anterior nao cobria
+> os workflows N8N que passam a chave antiga hardcoded. Sem essa correcao, os workflows
+> "Calendar WebHooks" e "Lembretes" PARAM DE FUNCIONAR apos a rotacao.
 
 ### Por que?
 A chave `google_calendar_secret_key_2024` esta em texto claro em 8+ arquivos de migration que estao no repositorio. Qualquer pessoa com acesso ao codigo pode descriptografar TODOS os tokens Google de TODOS os usuarios.
@@ -388,16 +469,44 @@ Texto embaralhado + mesma chave → Token original
 
 Se alguem sabe a chave, pode reverter o processo e obter todos os tokens.
 
-### O plano
-1. Gerar chave nova (aleatoria, impossivel de adivinhar)
-2. Salvar como variavel de ambiente no Supabase (nao no codigo)
-3. Re-criptografar todos tokens existentes com a nova chave
-4. Atualizar as funcoes SQL para usar a nova chave
-5. Nunca mais colocar chave no codigo
+### O que o N8N faz com a chave (DESCOBERTA CRITICA)
 
-### Como fazer
+Dois workflows N8N chamam a funcao `decrypt_token_json` via REST API passando a chave ANTIGA diretamente:
 
-**5.1 — Gerar chave nova**
+| Workflow | Nodes afetados | O que faz |
+|----------|---------------|-----------|
+| **Calendar WebHooks - Total Assistente** | `descriptografar_token_prod`, `descriptografar_token_prod1`, `descriptografar_token_prod2` | Descriptografa refresh tokens para renovar access tokens do Google |
+| **Lembretes Total Assistente** | `descriptografar_token_prod`, `descriptografar_token_prod1` | Descriptografa refresh tokens para criar eventos de lembrete no Google Calendar |
+
+Cada node faz um POST para:
+```
+https://ldbdtakddxznfridsarn.supabase.co/rest/v1/rpc/decrypt_token_json
+```
+Com body:
+```json
+{
+  "encrypted_token": "{{$json.encrypted_refresh_token}}",
+  "key_text": "google_calendar_secret_key_2024"
+}
+```
+
+**Se voce rotacionar a chave SEM atualizar esses nodes → os workflows PARAM.**
+
+### O plano completo (ordem CRITICA)
+
+```
+5.1  Gerar chave nova
+5.2  Salvar chave nova como env var no Supabase
+5.3  DESATIVAR os 2 workflows N8N afetados (evitar corrida)
+5.4  Atualizar funcoes SQL (encrypt_token, decrypt_token, decrypt_token_json)
+5.5  Re-criptografar todos tokens existentes
+5.6  Verificar que decrypt funciona com nova chave
+5.7  Atualizar os 5 nodes nos workflows N8N
+5.8  REATIVAR os 2 workflows N8N
+5.9  Verificar workflows funcionando
+```
+
+### 5.1 — Gerar chave nova
 
 No terminal:
 ```bash
@@ -407,7 +516,7 @@ Isso gera algo como: `a7f3b2c1d4e5f6789012345678abcdef0123456789abcdef0123456789
 
 **ANOTE ESTA CHAVE EM LOCAL SEGURO.** Se perder, nao conseguira descriptografar os tokens.
 
-**5.2 — Salvar como variavel de ambiente no Supabase**
+### 5.2 — Salvar como variavel de ambiente no Supabase
 
 No **Supabase Dashboard**:
 1. Va em **Project Settings** → **Edge Functions**
@@ -422,12 +531,30 @@ No **Supabase Dashboard**:
 ALTER DATABASE postgres SET app.encryption_key = 'SUA_CHAVE_AQUI';
 ```
 
-**5.3 — Atualizar as funcoes encrypt_token e decrypt_token**
-
-No **SQL Editor**, execute:
-
+**VERIFICAR que funcionou:**
 ```sql
--- FUNCAO ENCRYPT: agora le chave do env, NAO tem default hardcoded
+SELECT current_setting('app.encryption_key', true);
+-- Deve retornar a chave que voce acabou de setar
+```
+
+Se retornar NULL ou vazio, a configuracao nao foi aplicada. Tente reconectar ao banco ou reiniciar a sessao SQL.
+
+### 5.3 — DESATIVAR os 2 workflows N8N (NOVO)
+
+**POR QUE:** Se os workflows continuarem rodando enquanto voce re-criptografa os tokens, eles vao tentar descriptografar tokens "novos" com a chave "antiga" e falhar. Desativar ANTES evita esse problema.
+
+No painel N8N:
+1. Abrir **"Calendar WebHooks - Total Assistente"** → clicar no toggle para **desativar**
+2. Abrir **"Lembretes Total Assistente"** → clicar no toggle para **desativar**
+
+**ANOTE:** Os workflows ficam inativos ate o passo 5.8. Durante esse periodo, webhooks do Google Calendar e lembretes NAO serao processados. Isso e temporario (~30 minutos).
+
+### 5.4 — Atualizar funcoes SQL
+
+No **SQL Editor**, execute CADA bloco abaixo separadamente:
+
+**Bloco A — encrypt_token:**
+```sql
 CREATE OR REPLACE FUNCTION public.encrypt_token(
   token text,
   key_text text DEFAULT current_setting('app.encryption_key', true)
@@ -471,7 +598,11 @@ BEGIN
 END;
 $$;
 
--- FUNCAO DECRYPT: mesma mudanca
+GRANT EXECUTE ON FUNCTION public.encrypt_token(text, text) TO service_role;
+```
+
+**Bloco B — decrypt_token (2 parametros):**
+```sql
 CREATE OR REPLACE FUNCTION public.decrypt_token(
   encrypted_token text,
   key_text text DEFAULT current_setting('app.encryption_key', true)
@@ -524,77 +655,127 @@ BEGIN
 END;
 $$;
 
--- Permissoes
-GRANT EXECUTE ON FUNCTION public.encrypt_token(text, text) TO service_role;
 GRANT EXECUTE ON FUNCTION public.decrypt_token(text, text) TO service_role;
 ```
 
-**5.4 — Re-criptografar tokens existentes**
+**Bloco C — decrypt_token_json (NOVO — funcao que o N8N chama via RPC):**
 
-Este e o passo mais delicado. Vamos:
-1. Descriptografar com a chave ANTIGA
-2. Re-criptografar com a chave NOVA
+> **POR QUE ESTE BLOCO:** Os workflows N8N chamam `/rest/v1/rpc/decrypt_token_json`.
+> Esta funcao pode nao existir nas migrations (foi dropada e nunca recriada formalmente).
+> Precisamos garantir que ela exista e use a chave nova como default.
 
 ```sql
--- PASSO 1: Verificar quantos tokens existem
-SELECT COUNT(*) FROM google_calendar_connections WHERE encrypted_access_token IS NOT NULL;
-SELECT COUNT(*) FROM vip_google_connections WHERE encrypted_access_token IS NOT NULL;
+-- Dropar versao antiga se existir
+DROP FUNCTION IF EXISTS public.decrypt_token_json(text, text);
 
--- PASSO 2: Re-criptografar google_calendar_connections
--- (usa chave antiga para descriptografar, nova para criptografar)
-UPDATE google_calendar_connections
-SET
-  encrypted_access_token = public.encrypt_token(
-    public.decrypt_token(encrypted_access_token, 'google_calendar_secret_key_2024'),
-    current_setting('app.encryption_key')
-  ),
-  encrypted_refresh_token = public.encrypt_token(
-    public.decrypt_token(encrypted_refresh_token, 'google_calendar_secret_key_2024'),
-    current_setting('app.encryption_key')
-  )
-WHERE encrypted_access_token IS NOT NULL;
+-- Criar versao que usa chave do env como default
+CREATE OR REPLACE FUNCTION public.decrypt_token_json(
+  encrypted_token text,
+  key_text text DEFAULT current_setting('app.encryption_key', true)
+)
+RETURNS text
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  -- Delega para decrypt_token (mesma logica)
+  RETURN public.decrypt_token(encrypted_token, key_text);
+END;
+$$;
 
--- PASSO 3: Re-criptografar vip_google_connections (se tabela ainda existir)
-UPDATE vip_google_connections
-SET
-  encrypted_access_token = public.encrypt_token(
-    public.decrypt_token(encrypted_access_token, 'google_calendar_secret_key_2024'),
-    current_setting('app.encryption_key')
-  ),
-  encrypted_refresh_token = public.encrypt_token(
-    public.decrypt_token(encrypted_refresh_token, 'google_calendar_secret_key_2024'),
-    current_setting('app.encryption_key')
-  )
-WHERE encrypted_access_token IS NOT NULL;
+-- IMPORTANTE: Dar permissao para anon (N8N usa supabaseApi que pode ser anon ou service_role)
+GRANT EXECUTE ON FUNCTION public.decrypt_token_json(text, text) TO service_role;
+GRANT EXECUTE ON FUNCTION public.decrypt_token_json(text, text) TO anon;
+GRANT EXECUTE ON FUNCTION public.decrypt_token_json(text, text) TO authenticated;
 ```
 
-**5.5 — Atualizar funcoes que chamam encrypt/decrypt com chave hardcoded**
-
-As funcoes SQL `store_google_connection`, `secure_get_google_tokens`, `store_vip_google_connection`, e `get_vip_google_tokens` chamam encrypt/decrypt com a chave hardcoded. Precisam ser atualizadas para usar o default (que agora le do env).
-
-No **SQL Editor**, para cada funcao que tinha `'google_calendar_secret_key_2024'` explicito, atualize removendo o parametro de chave (assim usa o default):
+**Bloco D — Atualizar funcoes que chamam encrypt/decrypt com chave hardcoded:**
 
 ```sql
--- Exemplo: secure_get_google_tokens (atualizar para usar default)
--- Procure linhas como:
---   decrypt_token(encrypted_access_token, 'google_calendar_secret_key_2024')
--- E troque para:
---   decrypt_token(encrypted_access_token)
--- (sem segundo parametro = usa current_setting('app.encryption_key'))
-```
-
-Para ver todas as funcoes que precisam de atualizacao:
-```sql
--- Lista funcoes que ainda referenciam a chave antiga
+-- Listar funcoes que ainda referenciam a chave antiga
 SELECT routine_name, routine_definition
 FROM information_schema.routines
 WHERE routine_definition LIKE '%google_calendar_secret_key_2024%'
 AND routine_schema = 'public';
 ```
 
-**5.6 — Verificar que funciona**
+Para CADA funcao retornada, atualize removendo o parametro de chave (assim usa o default). Exemplos comuns:
+
 ```sql
--- Testar que decrypt funciona com a nova chave
+-- Onde tinha:
+--   decrypt_token(encrypted_access_token, 'google_calendar_secret_key_2024')
+-- Troque para:
+--   decrypt_token(encrypted_access_token)
+-- (sem segundo parametro = usa current_setting('app.encryption_key'))
+```
+
+As funcoes mais provaveis que precisam de atualizacao:
+- `secure_get_google_tokens`
+- `store_google_connection`
+- `store_access_token`
+- `store_vip_google_connection`
+- `get_vip_google_tokens`
+
+### 5.5 — Re-criptografar tokens existentes
+
+> **ATENCAO v2:** A versao anterior fazia tudo em um unico UPDATE.
+> Se houver muitos registros, isso pode dar timeout. Agora fazemos em batches.
+
+**Primeiro, verificar quantos tokens existem:**
+```sql
+SELECT COUNT(*) as total FROM google_calendar_connections WHERE encrypted_access_token IS NOT NULL;
+SELECT COUNT(*) as total FROM vip_google_connections WHERE encrypted_access_token IS NOT NULL;
+```
+
+**Re-criptografar google_calendar_connections (em batches de 100):**
+```sql
+-- Se tiver POUCOS registros (menos de 500), pode rodar direto:
+UPDATE google_calendar_connections
+SET
+  encrypted_access_token = public.encrypt_token(
+    public.decrypt_token(encrypted_access_token, 'google_calendar_secret_key_2024')
+  ),
+  encrypted_refresh_token = public.encrypt_token(
+    public.decrypt_token(encrypted_refresh_token, 'google_calendar_secret_key_2024')
+  )
+WHERE encrypted_access_token IS NOT NULL;
+
+-- Se tiver MUITOS registros (500+), use batches:
+-- Batch 1
+UPDATE google_calendar_connections
+SET
+  encrypted_access_token = public.encrypt_token(
+    public.decrypt_token(encrypted_access_token, 'google_calendar_secret_key_2024')
+  ),
+  encrypted_refresh_token = public.encrypt_token(
+    public.decrypt_token(encrypted_refresh_token, 'google_calendar_secret_key_2024')
+  )
+WHERE id IN (
+  SELECT id FROM google_calendar_connections
+  WHERE encrypted_access_token IS NOT NULL
+  LIMIT 100
+  -- Para batches seguintes, adicione: OFFSET 100, OFFSET 200, etc.
+);
+```
+
+**Re-criptografar vip_google_connections (se tabela tiver dados):**
+```sql
+UPDATE vip_google_connections
+SET
+  encrypted_access_token = public.encrypt_token(
+    public.decrypt_token(encrypted_access_token, 'google_calendar_secret_key_2024')
+  ),
+  encrypted_refresh_token = public.encrypt_token(
+    public.decrypt_token(encrypted_refresh_token, 'google_calendar_secret_key_2024')
+  )
+WHERE encrypted_access_token IS NOT NULL;
+```
+
+### 5.6 — Verificar que decrypt funciona com nova chave
+
+```sql
+-- Testar que decrypt funciona com a nova chave (via env)
 SELECT
   user_id,
   public.decrypt_token(encrypted_access_token) IS NOT NULL as token_ok
@@ -603,6 +784,78 @@ WHERE encrypted_access_token IS NOT NULL
 LIMIT 3;
 ```
 Se retornar `token_ok = true`, a re-criptografia funcionou.
+
+```sql
+-- Testar que a chave ANTIGA nao funciona mais
+SELECT public.decrypt_token(
+  encrypted_access_token,
+  'google_calendar_secret_key_2024'
+) FROM google_calendar_connections
+WHERE encrypted_access_token IS NOT NULL
+LIMIT 1;
+```
+**Esperado:** ERRO ou NULL (chave antiga invalida).
+
+```sql
+-- Testar que decrypt_token_json tambem funciona (e o que o N8N vai chamar)
+SELECT public.decrypt_token_json(
+  encrypted_refresh_token
+) IS NOT NULL as json_func_ok
+FROM google_calendar_connections
+WHERE encrypted_refresh_token IS NOT NULL
+LIMIT 1;
+```
+**Esperado:** `json_func_ok = true`.
+
+### 5.7 — Atualizar os 5 nodes nos workflows N8N (NOVO)
+
+Agora que os tokens estao re-criptografados e as funcoes SQL usam a nova chave como default, precisamos remover a chave hardcoded dos workflows N8N.
+
+**No painel N8N, abrir "Calendar WebHooks - Total Assistente":**
+
+Localizar estes 3 nodes (buscar por "descriptografar"):
+1. `descriptografar_token_prod`
+2. `descriptografar_token_prod1`
+3. `descriptografar_token_prod2`
+
+Em CADA node, no campo **JSON Body**, trocar de:
+```
+={{ ({ encrypted_token: $json.encrypted_refresh_token, key_text: 'google_calendar_secret_key_2024' }) }}
+```
+
+Para:
+```
+={{ ({ encrypted_token: $json.encrypted_refresh_token }) }}
+```
+
+**No painel N8N, abrir "Lembretes Total Assistente":**
+
+Localizar estes 2 nodes:
+1. `descriptografar_token_prod`
+2. `descriptografar_token_prod1`
+
+Mesma alteracao: remover `key_text` do JSON body.
+
+**SALVAR cada workflow apos editar todos os nodes.**
+
+### 5.8 — REATIVAR os 2 workflows N8N (NOVO)
+
+No painel N8N:
+1. Abrir **"Calendar WebHooks - Total Assistente"** → clicar no toggle para **ativar**
+2. Abrir **"Lembretes Total Assistente"** → clicar no toggle para **ativar**
+
+### 5.9 — Verificar workflows funcionando (NOVO)
+
+Para verificar que os workflows estao operacionais:
+
+1. **Calendar WebHooks:** Crie ou edite um evento no Google Calendar de um usuario de teste. O webhook deve disparar e o workflow deve processar sem erro.
+
+2. **Lembretes:** Verifique no historico de execucoes do N8N se o proximo lembrete executa sem erro no node `descriptografar_token_prod`.
+
+Se qualquer workflow falhar com erro tipo "Encryption key not configured" ou "Invalid encrypted token":
+- Verifique se `app.encryption_key` esta setado: `SELECT current_setting('app.encryption_key', true);`
+- Verifique se `decrypt_token_json` existe: `SELECT proname FROM pg_proc WHERE proname = 'decrypt_token_json';`
+- Verifique se os nodes N8N realmente tiveram o `key_text` removido
 
 ---
 
@@ -618,16 +871,13 @@ curl -s -o /dev/null -w "%{http_code}" \
 curl -s -o /dev/null -w "%{http_code}" \
   "https://ldbdtakddxznfridsarn.supabase.co/functions/v1/sync-profile-to-auth"
 # Esperado: 404
-```
 
-### 6.2 — Checklist de VIP (se removido)
-```bash
 curl -s -o /dev/null -w "%{http_code}" \
   "https://ldbdtakddxznfridsarn.supabase.co/functions/v1/vip-google-connect?action=status&phone=5543999999999"
 # Esperado: 404
 ```
 
-### 6.3 — Checklist de CORS
+### 6.2 — Checklist de CORS
 ```bash
 # Request de origem nao-autorizada:
 curl -s -D - \
@@ -639,9 +889,10 @@ curl -s -D - \
 # (NAO deve mostrar https://hacker.com)
 ```
 
-### 6.4 — Checklist de criptografia
+### 6.3 — Checklist de criptografia
 ```sql
 -- No SQL Editor do Supabase:
+
 -- A chave antiga NAO deve funcionar mais:
 SELECT public.decrypt_token(
   encrypted_access_token,
@@ -653,7 +904,20 @@ SELECT public.decrypt_token(
 SELECT public.decrypt_token(encrypted_access_token)
 FROM google_calendar_connections LIMIT 1;
 -- Esperado: retorna o token (funciona!)
+
+-- decrypt_token_json deve funcionar (N8N usa esta):
+SELECT public.decrypt_token_json(encrypted_refresh_token)
+FROM google_calendar_connections LIMIT 1;
+-- Esperado: retorna o token
 ```
+
+### 6.4 — Checklist N8N (NOVO)
+
+No painel N8N, verificar:
+
+- [ ] **Calendar WebHooks - Total Assistente:** Workflow ativo, ultima execucao sem erro
+- [ ] **Lembretes Total Assistente:** Workflow ativo, ultima execucao sem erro
+- [ ] Verificar historico de execucoes: os nodes `descriptografar_token_prod*` retornam tokens validos (nao NULL, nao erro)
 
 ### 6.5 — Testar funcionalidades que DEVEM continuar funcionando
 
@@ -666,10 +930,15 @@ Apos todas as correcoes, teste manualmente:
 - [ ] **Criar gasto:** Adicionar gasto → salva?
 - [ ] **WhatsApp bot:** Mandar mensagem pro bot → responde?
 - [ ] **Hotmart webhook:** Se possivel, simular compra test na Hotmart → subscription criada?
+- [ ] **Lembretes N8N:** Proximo lembrete agendado executa sem erro?
+- [ ] **Calendar Webhooks N8N:** Editar evento no Google → N8N processa mudanca?
 
 Se qualquer um falhar, a causa mais provavel e:
-1. Funcao SQL de criptografia com chave errada (Passo 5)
-2. CORS bloqueando request legitimo (Passo 1 — adicione sua URL de dev se necessario)
+1. Funcao SQL de criptografia com chave errada (Passo 5.4/5.5)
+2. `decrypt_token_json` nao existe ou nao tem permissao (Passo 5.4 Bloco C)
+3. Nodes N8N ainda com chave antiga no body (Passo 5.7)
+4. CORS bloqueando request legitimo (Passo 1 — adicione sua URL de dev se necessario)
+5. `app.encryption_key` nao configurado (Passo 5.2 — verificar com `SELECT current_setting(...)`)
 
 ---
 
@@ -688,6 +957,9 @@ Se qualquer um falhar, a causa mais provavel e:
 | **OAuth** | Protocolo que permite login via Google/Facebook sem compartilhar senha |
 | **HMAC** | Assinatura digital que prova que uma mensagem nao foi alterada |
 | **Rate Limit** | Limite de quantas vezes algo pode ser feito por minuto/hora |
+| **N8N** | Plataforma de automacao de workflows (sua "orquestracao") |
+| **RPC** | Remote Procedure Call — chamar uma funcao SQL via API REST |
+| **decrypt_token_json** | Funcao SQL que o N8N chama para descriptografar tokens Google |
 
 ---
 
@@ -698,5 +970,6 @@ Com essas 5 portas fechadas, seu sistema ja esta MUITO mais seguro para lancar. 
 2. Rate limit no check-email-exists
 3. Grace period funcional
 4. Monitoramento (Sentry)
+5. Adicionar `kiwify-webhook` ao HMAC (mesma logica do hotmart)
 
 Mas TIER 0 e o que importa agora.
