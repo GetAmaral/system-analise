@@ -57,7 +57,7 @@ Siga esta ordem. Cada passo depende do anterior estar feito.
 
 ```
 PASSO 1: Fechar CORS em todas edge functions          (~20 min)
-PASSO 2: Eliminar create-user-admin                    (~10 min)
+PASSO 2: Proteger create-user-admin com chave secreta    (~10 min)
 PASSO 3: Eliminar sync-profile-to-auth + trigger       (~20 min)
 PASSO 4: Proteger ou eliminar vip-google-connect       (~15 min)
 PASSO 5: Rotacionar chave de criptografia + N8N        (~60 min)  ← ATUALIZADO
@@ -228,58 +228,85 @@ npx supabase functions deploy
 
 ---
 
-## PASSO 2 — Eliminar `create-user-admin`
+## PASSO 2 — Proteger `create-user-admin` com chave secreta
 
 ### Por que?
-Esta funcao cria usuarios com email confirmado, sem exigir nenhuma autenticacao. Qualquer pessoa pode criar contas falsas.
+Esta funcao cria usuarios com email confirmado, sem exigir nenhuma autenticacao. Qualquer pessoa que descubra a URL pode criar contas falsas. A funcao e usada por um sistema externo, entao NAO pode ser deletada — mas PRECISA de protecao.
 
-### Quem usa esta funcao?
-**Ninguem.** Investigacao completa:
-- O frontend NAO chama esta funcao (0 resultados no `src/`)
-- O hotmart-webhook NAO chama esta funcao (verificado no codigo-fonte)
-- **Nenhum workflow N8N referencia ela** (0 resultados nos 8 JSONs de producao)
-
-A funcao e um resquicio de desenvolvimento. Pode ser removida com seguranca.
+### Solucao: adicionar verificacao de chave secreta (API key)
+Seu sistema externo envia uma chave no header `Authorization`. A funcao verifica se a chave bate. Se nao bater → rejeita com 401.
 
 ### Como fazer
 
-**2.1 — Remover do config.toml**
+**2.1 — Gerar uma chave secreta**
 
-Abra `/home/totalAssistente/site/supabase/config.toml` e DELETE estas linhas:
-```toml
-[functions.create-user-admin]
-verify_jwt = false
-```
-
-**2.2 — Deletar a pasta da funcao**
+No terminal:
 ```bash
-rm -rf /home/totalAssistente/site/supabase/functions/create-user-admin
+openssl rand -hex 32
+```
+Anote o resultado (ex: `a1b2c3d4e5f6...`). Esta sera sua `ADMIN_API_SECRET`.
+
+**2.2 — Salvar como variavel de ambiente no Supabase**
+
+```bash
+supabase secrets set ADMIN_API_SECRET="SUA_CHAVE_AQUI"
 ```
 
-**2.3 — Fazer deploy (isso remove a funcao do Supabase)**
+Ou pelo Dashboard: **Project Settings** → **Edge Functions** → **Environment Variables** → adicionar `ADMIN_API_SECRET`.
+
+**2.3 — Adicionar verificacao na funcao**
+
+Abra `/home/totalAssistente/site/supabase/functions/create-user-admin/index.ts`.
+
+Logo DEPOIS da linha `const cors = getCorsHeaders(req);` e do bloco OPTIONS, ANTES do `const { email, password, name, phone } = await req.json();`, adicione:
+
+```typescript
+    // Verificar chave secreta — so seu sistema externo conhece
+    const authHeader = req.headers.get('authorization');
+    const adminSecret = Deno.env.get('ADMIN_API_SECRET');
+
+    if (!adminSecret || authHeader !== `Bearer ${adminSecret}`) {
+      return new Response(
+        JSON.stringify({ error: "Nao autorizado" }),
+        { status: 401, headers: { ...cors, "Content-Type": "application/json" } }
+      );
+    }
+```
+
+> **NOTA:** O arquivo ja corrigido esta disponivel em `edge-functions-cors-fix/create-user-admin.ts` neste repositorio.
+
+**2.4 — Fazer deploy**
 ```bash
 cd /home/totalAssistente/site
-npx supabase functions deploy
+npx supabase functions deploy create-user-admin
 ```
 
-**2.4 — Verificar que foi removida**
+**2.5 — Verificar que rejeita sem chave**
 ```bash
-curl -X POST "https://ldbdtakddxznfridsarn.supabase.co/functions/v1/create-user-admin" \
+# SEM chave (deve dar 401):
+curl -s -w "\n%{http_code}" -X POST \
+  "https://ldbdtakddxznfridsarn.supabase.co/functions/v1/create-user-admin" \
   -H "Content-Type: application/json" \
   -d '{"email": "teste@teste.com", "password": "Test123!"}'
-```
-**Resultado esperado:** Erro 404 (funcao nao encontrada).
+# Esperado: {"error":"Nao autorizado"} + status 401
 
-### Se der medo de deletar
-Alternativa: em vez de deletar, adicione este bloco no INICIO da funcao:
-```typescript
-// BLOQUEAR COMPLETAMENTE
-return new Response(JSON.stringify({ error: 'Function disabled' }), {
-  status: 403,
-  headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-});
+# COM chave (deve funcionar):
+curl -s -w "\n%{http_code}" -X POST \
+  "https://ldbdtakddxznfridsarn.supabase.co/functions/v1/create-user-admin" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer SUA_CHAVE_AQUI" \
+  -d '{"email": "teste@teste.com", "password": "Test123!"}'
+# Esperado: {"success":true,...} + status 200
 ```
-Mas deletar e melhor. Codigo morto e divida tecnica.
+
+**2.6 — Atualizar seu sistema externo**
+
+No sistema que chama `create-user-admin`, adicione o header:
+```
+Authorization: Bearer SUA_CHAVE_AQUI
+```
+
+A partir de agora, so quem tem a chave consegue criar contas.
 
 ---
 
