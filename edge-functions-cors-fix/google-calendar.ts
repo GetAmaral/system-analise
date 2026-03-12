@@ -103,7 +103,7 @@ serve(async (req) => {
   // C) Callback: se houver code -> troca por tokens, salva e redireciona para página do frontend
   if (req.method === 'GET' && code && state) {
     const { userId, origin } = parseState(state);
-    const result = await handleCallback(userId, code);
+    const result = await handleCallback(cors, userId, code);
     const success = result.status === 200;
 
     // Redireciona para página do frontend com resultado
@@ -167,22 +167,22 @@ serve(async (req) => {
 
     // Para cron-sync, já temos o finalUserId validado
     if (action === 'cron-sync') {
-      return handleCronSync(finalUserId, renewWebhook);
+      return handleCronSync(cors, finalUserId, renewWebhook);
     }
 
     switch (action) {
       case 'auth':
-        return handleAuth(finalUserId);
+        return handleAuth(cors, finalUserId);
       case 'sync':
-        return handleSyncFromGoogle(finalUserId);
+        return handleSyncFromGoogle(cors, finalUserId);
       case 'create':
-        return handleCreateEvent(finalUserId, event);
+        return handleCreateEvent(cors, finalUserId, event);
       case 'update':
-        return handleUpdateEvent(finalUserId, eventId, event);
+        return handleUpdateEvent(cors, finalUserId, eventId, event);
       case 'delete':
-        return handleDeleteEvent(finalUserId, eventId);
+        return handleDeleteEvent(cors, finalUserId, eventId);
       case 'disconnect':
-        return handleDisconnect(finalUserId);
+        return handleDisconnect(cors, finalUserId);
       default:
         return new Response(JSON.stringify({ error: 'Invalid action' }), {
           status: 400,
@@ -198,7 +198,7 @@ serve(async (req) => {
   }
 });
 
-async function handleAuth(userId: string) {
+async function handleAuth(cors: Record<string, string>, userId: string) {
   // Retorna a URL da função (que inicia o redirecionamento para o Google)
   const authUrl = `${supabaseUrl}/functions/v1/google-calendar?userId=${encodeURIComponent(userId)}`;
   return new Response(JSON.stringify({ authUrl }), {
@@ -206,7 +206,7 @@ async function handleAuth(userId: string) {
   });
 }
 
-async function handleCallback(userId: string, code: string) {
+async function handleCallback(cors: Record<string, string>, userId: string, code: string) {
   try {
     const redirectUri = `${supabaseUrl}/functions/v1/google-calendar`;
 
@@ -357,7 +357,7 @@ async function refreshAccessToken(userId: string, refreshToken: string): Promise
   }
 }
 
-async function handleCreateEvent(userId: string, eventData: any) {
+async function handleCreateEvent(cors: Record<string, string>, userId: string, eventData: any) {
   try {
     console.log('Creating Google Calendar event');
 
@@ -397,7 +397,7 @@ async function handleCreateEvent(userId: string, eventData: any) {
   }
 }
 
-async function handleUpdateEvent(userId: string, eventId: string, eventData: any) {
+async function handleUpdateEvent(cors: Record<string, string>, userId: string, eventId: string, eventData: any) {
   try {
     console.log('Updating Google Calendar event:', eventId);
 
@@ -437,7 +437,7 @@ async function handleUpdateEvent(userId: string, eventId: string, eventData: any
   }
 }
 
-async function handleDeleteEvent(userId: string, eventId: string) {
+async function handleDeleteEvent(cors: Record<string, string>, userId: string, eventId: string) {
   try {
     console.log('Deleting Google Calendar event:', eventId);
 
@@ -475,7 +475,7 @@ async function handleDeleteEvent(userId: string, eventId: string) {
   }
 }
 
-async function handleDisconnect(userId: string) {
+async function handleDisconnect(cors: Record<string, string>, userId: string) {
   try {
     console.log(`Disconnecting Google Calendar for user: ${userId}`);
 
@@ -549,7 +549,7 @@ async function handleDisconnect(userId: string) {
   }
 }
 
-async function handleSyncFromGoogle(userId: string) {
+async function handleSyncFromGoogle(cors: Record<string, string>, userId: string) {
   try {
     console.log(`Manual sync requested for user: ${userId}`);
 
@@ -853,7 +853,7 @@ async function cancelGoogleWebhook(userId: string): Promise<void> {
   }
 }
 
-async function handleCronSync(userId: string, renewWebhook: boolean = false) {
+async function handleCronSync(cors: Record<string, string>, userId: string, renewWebhook: boolean = false) {
   try {
     console.log(`⏰ Cron sync for user: ${userId}`);
 
