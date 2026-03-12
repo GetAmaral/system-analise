@@ -506,6 +506,44 @@ Com body:
 5.9  Verificar workflows funcionando
 ```
 
+### ANTES DE COMECAR O PASSO 5 — Backup de Seguranca
+
+> **IMPORTANTE:** O Passo 5 e o mais arriscado do guia. Se algo der errado na
+> re-criptografia, voce pode perder acesso aos tokens Google. Faca este backup ANTES.
+
+**Backup dos tokens atuais:**
+```sql
+-- No SQL Editor do Supabase, execute:
+CREATE TABLE IF NOT EXISTS google_calendar_connections_backup AS
+SELECT id, user_id, encrypted_access_token, encrypted_refresh_token
+FROM google_calendar_connections
+WHERE encrypted_access_token IS NOT NULL;
+
+-- Verificar que o backup tem dados:
+SELECT COUNT(*) FROM google_calendar_connections_backup;
+-- Deve retornar o mesmo numero de tokens que voce tem
+```
+
+**Se algo der errado — como reverter:**
+```sql
+-- ROLLBACK: restaurar tokens originais do backup
+UPDATE google_calendar_connections gc
+SET
+  encrypted_access_token = bk.encrypted_access_token,
+  encrypted_refresh_token = bk.encrypted_refresh_token
+FROM google_calendar_connections_backup bk
+WHERE gc.id = bk.id;
+```
+
+**Apos TUDO funcionar (Passo 6 completo), limpar backup:**
+```sql
+DROP TABLE IF EXISTS google_calendar_connections_backup;
+```
+
+**Tempo de downtime dos workflows N8N:** ~18 minutos (Calendar WebHooks e Lembretes).
+O Google Calendar reenvia webhooks automaticamente, entao nenhum evento e perdido.
+Lembretes tem risco baixo de perder 1 ciclo se agendado exatamente nessa janela.
+
 ### 5.1 — Gerar chave nova
 
 No terminal:
@@ -771,6 +809,22 @@ SET
   )
 WHERE encrypted_access_token IS NOT NULL;
 ```
+
+### 5.5b — Verificar integridade da re-criptografia (ANTES de continuar)
+
+```sql
+-- CRITICO: Rodar ANTES de reativar qualquer coisa
+SELECT
+  COUNT(*) as total,
+  COUNT(*) FILTER (WHERE public.decrypt_token(encrypted_access_token) IS NOT NULL) as migrados_ok,
+  COUNT(*) FILTER (WHERE public.decrypt_token(encrypted_access_token) IS NULL) as falhou
+FROM google_calendar_connections
+WHERE encrypted_access_token IS NOT NULL;
+```
+
+**Se `falhou > 0`:** PARE. NAO reative o N8N. Rode o UPDATE novamente apenas nos tokens que falharam, ou use o backup para reverter e tentar de novo.
+
+**Se `falhou = 0`:** Todos os tokens foram migrados. Continue para 5.6.
 
 ### 5.6 — Verificar que decrypt funciona com nova chave
 
