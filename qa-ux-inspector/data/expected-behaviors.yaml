@@ -1,0 +1,306 @@
+# Comportamentos Esperados por Feature — Total Assistente
+# Extraido da documentacao e comportamento observado
+# Atualizado: 2026-03-13
+
+version: 1.0.0
+last_updated: "2026-03-13"
+
+# Fonte principal: /home/totalAssistente/README.md
+# Fonte secundaria: workflows N8N em /home/totalAssistente/jsonsProd/
+# Fonte terciaria: diagnosticos do @analisador
+
+behaviors:
+
+  # ============================================================
+  # BLOCO: AGENDA
+  # ============================================================
+
+  agenda-criar-evento:
+    description: "Criacao de eventos na agenda via mensagem natural"
+    workflow: "Main - Total Assistente → User Premium/Standard"
+    behavior:
+      - "Usuario envia mensagem com intencao de criar evento (ex: 'marca reuniao amanha as 14h')"
+      - "AI classifica intencao como 'criar_evento'"
+      - "AI extrai: titulo, data, hora, descricao (se houver)"
+      - "Sistema verifica conflitos de horario"
+      - "Se sem conflito: cria evento no Google Calendar via API"
+      - "Registra evento na tabela calendar_events no Supabase"
+      - "Retorna confirmacao com detalhes do evento criado"
+    error_handling:
+      - "Data passada: mensagem informando que data ja passou, sugerir data futura"
+      - "Conflito de horario: informar conflito e sugerir horarios alternativos"
+      - "Dados incompletos: pedir informacoes faltantes (data ou hora)"
+      - "Google API falha: registrar localmente e tentar sync depois"
+    data_model:
+      table: calendar_events
+      required_fields: [user_id, summary, start_time, end_time]
+      optional_fields: [description, location, google_event_id, sync_status]
+    ux_expectations:
+      response_time: "< 3s"
+      tone: "confirmacao amigavel em PT-BR"
+      format: "emoji de confirmacao + detalhes do evento + data/hora formatada"
+
+  agenda-listar-eventos:
+    description: "Listagem de eventos da agenda por periodo"
+    workflow: "Main - Total Assistente → User Premium/Standard"
+    behavior:
+      - "Usuario pede para ver agenda (ex: 'meus eventos de hoje', 'agenda da semana')"
+      - "AI classifica intencao como 'listar_eventos'"
+      - "AI extrai periodo: hoje, semana, mes, ou data especifica"
+      - "Sistema consulta calendar_events no Supabase filtrando por user_id e periodo"
+      - "Retorna lista formatada com horarios e titulos"
+    error_handling:
+      - "Sem eventos: mensagem informativa de agenda livre"
+      - "Muitos eventos: agrupar por dia ou paginar"
+    ux_expectations:
+      response_time: "< 2s"
+      format: "lista com emojis, agrupada por dia se semana/mes"
+
+  agenda-editar-evento:
+    description: "Edicao de evento existente na agenda"
+    workflow: "Main - Total Assistente → User Premium/Standard"
+    behavior:
+      - "Usuario pede para alterar evento (ex: 'muda a reuniao de amanha para 15h')"
+      - "AI identifica evento a ser editado e alteracoes desejadas"
+      - "Sistema atualiza no Google Calendar e Supabase"
+      - "Retorna confirmacao com dados atualizados"
+    error_handling:
+      - "Evento nao encontrado: informar e pedir mais detalhes"
+      - "Ambiguidade: listar eventos similares para usuario escolher"
+
+  agenda-excluir-evento:
+    description: "Exclusao de evento da agenda"
+    workflow: "Main - Total Assistente → User Premium/Standard"
+    behavior:
+      - "Usuario pede para cancelar/excluir evento"
+      - "AI identifica evento e pede confirmacao"
+      - "Sistema remove do Google Calendar e marca como excluido no Supabase"
+      - "Retorna confirmacao de exclusao"
+    error_handling:
+      - "Evento nao encontrado: informar"
+      - "Evento ja passado: informar que ja ocorreu"
+
+  agenda-buscar-horario-livre:
+    description: "Busca de horarios livres na agenda"
+    workflow: "Main - Total Assistente → User Premium/Standard"
+    behavior:
+      - "Usuario pergunta quando esta livre (ex: 'quando estou livre amanha?')"
+      - "Sistema consulta eventos do dia e calcula intervalos livres"
+      - "Retorna lista de horarios disponiveis"
+
+  agenda-lembrete:
+    description: "Configuracao de lembretes para eventos"
+    workflow: "Lembretes Total Assistente"
+    behavior:
+      - "Sistema envia lembrete antes do evento conforme configurado"
+      - "Padroes: 30 min, 1 hora, 1 dia antes"
+      - "Lembrete via WhatsApp com detalhes do evento"
+
+  agenda-sync-google:
+    description: "Sincronizacao bidirecional com Google Calendar"
+    workflow: "Calendar WebHooks - Total Assistente"
+    behavior:
+      - "Eventos criados no WhatsApp sincronizam com Google Calendar"
+      - "Eventos criados no Google Calendar sincronizam com Supabase"
+      - "Webhook do Google notifica N8N sobre alteracoes"
+      - "sync_status atualizado em calendar_events"
+
+  agenda-resumo-dia:
+    description: "Resumo dos eventos do dia"
+    workflow: "Main - Total Assistente → User Premium/Standard"
+    behavior:
+      - "Usuario pede resumo do dia"
+      - "Sistema retorna todos os eventos do dia com horarios e detalhes"
+      - "Formatacao clara com timeline"
+
+  # ============================================================
+  # BLOCO: FINANCEIRO
+  # ============================================================
+
+  fin-registrar-despesa:
+    description: "Registro de despesa via mensagem natural"
+    workflow: "Main - Total Assistente → User Premium/Standard → Financeiro - Total"
+    behavior:
+      - "Usuario informa gasto (ex: 'gastei 50 reais no almoco')"
+      - "AI classifica como 'registrar_despesa'"
+      - "AI extrai: valor, descricao, categoria (se mencionada)"
+      - "Se categoria nao mencionada: AI classifica automaticamente"
+      - "Registra na tabela expenses no Supabase"
+      - "Retorna confirmacao com valor, descricao e categoria"
+    data_model:
+      table: expenses
+      required_fields: [user_id, amount, description, type]
+      optional_fields: [category, date, notes]
+    ux_expectations:
+      response_time: "< 2s"
+      format: "emoji + confirmacao + valor formatado (R$ X.XXX,XX)"
+
+  fin-registrar-receita:
+    description: "Registro de receita via mensagem natural"
+    workflow: "Main - Total Assistente → Financeiro - Total"
+    behavior:
+      - "Usuario informa recebimento (ex: 'recebi 5000 de salario')"
+      - "AI classifica como 'registrar_receita'"
+      - "Registra na tabela expenses com type='income'"
+      - "Retorna confirmacao"
+
+  fin-consultar-saldo:
+    description: "Consulta de saldo (receitas - despesas)"
+    workflow: "Main - Total Assistente → Financeiro - Total"
+    behavior:
+      - "Usuario pergunta saldo (ex: 'qual meu saldo?', 'quanto tenho?')"
+      - "Sistema calcula: total receitas - total despesas do periodo"
+      - "Retorna saldo formatado com indicador positivo/negativo"
+    ux_expectations:
+      format: "valor formatado com emoji indicando positivo/negativo"
+
+  fin-listar-despesas:
+    description: "Listagem de despesas por periodo ou categoria"
+    workflow: "Main - Total Assistente → Financeiro - Total"
+    behavior:
+      - "Usuario pede lista de gastos"
+      - "Sistema consulta expenses filtrando por periodo e/ou categoria"
+      - "Retorna lista formatada com total"
+
+  fin-meta-financeira:
+    description: "Definicao e gerenciamento de metas financeiras"
+    workflow: "Main - Total Assistente → Financeiro - Total"
+    behavior:
+      - "Usuario define meta (ex: 'quero economizar 5000 ate dezembro')"
+      - "Sistema cria/atualiza em financial_goals"
+      - "Retorna confirmacao com detalhes da meta"
+
+  fin-progresso-meta:
+    description: "Consulta de progresso da meta financeira"
+    workflow: "Main - Total Assistente → Financeiro - Total"
+    behavior:
+      - "Usuario pergunta sobre progresso da meta"
+      - "Sistema calcula progresso e retorna percentual e valor restante"
+
+  fin-categorias:
+    description: "Gerenciamento de categorias financeiras"
+    workflow: "Main - Total Assistente → Financeiro - Total"
+    behavior:
+      - "Usuario pede para listar, criar ou editar categorias"
+      - "Sistema retorna lista ou confirma alteracao"
+
+  fin-investimentos:
+    description: "Registro e consulta de investimentos"
+    workflow: "Main - Total Assistente → Financeiro - Total"
+    behavior:
+      - "Usuario registra investimento com tipo, valor e rentabilidade"
+      - "Sistema registra em investments"
+      - "Premium: analytics de rentabilidade"
+
+  fin-extrato:
+    description: "Geracao de extrato financeiro"
+    workflow: "Main - Total Assistente → Financeiro - Total"
+    behavior:
+      - "Usuario pede extrato (ex: 'extrato do mes')"
+      - "Sistema gera lista cronologica de todas as movimentacoes"
+      - "Inclui receitas, despesas e saldo parcial"
+
+  # ============================================================
+  # BLOCO: RELATORIOS
+  # ============================================================
+
+  rel-relatorio-semanal:
+    description: "Relatorio semanal automatico"
+    workflow: "Relatorios Mensais-Semanais"
+    behavior:
+      - "Gerado automaticamente toda semana (ou sob demanda)"
+      - "Inclui: resumo financeiro + agenda da semana"
+      - "Enviado via WhatsApp"
+
+  rel-relatorio-mensal:
+    description: "Relatorio mensal automatico"
+    workflow: "Relatorios Mensais-Semanais"
+    behavior:
+      - "Gerado automaticamente todo mes (ou sob demanda)"
+      - "Inclui: financeiro completo + agenda + investimentos"
+      - "Comparacao com mes anterior"
+
+  rel-analytics-gastos:
+    description: "Analytics detalhado de gastos"
+    workflow: "Main - Total Assistente → Financeiro - Total"
+    behavior:
+      - "Analise por categoria, tendencias, top gastos"
+      - "Premium: projecoes e insights AI"
+
+  rel-comparativo:
+    description: "Comparativo entre periodos"
+    workflow: "Main - Total Assistente → Financeiro - Total"
+    behavior:
+      - "Compara mes atual vs anterior"
+      - "Variacoes percentuais por categoria"
+
+  # ============================================================
+  # BLOCO: PREMIUM
+  # ============================================================
+
+  prem-analytics-avancado:
+    description: "Analytics avancado exclusivo Premium"
+    behavior:
+      - "Projecoes financeiras baseadas em historico"
+      - "Insights personalizados por AI"
+      - "Requer subscription.plan = 'premium'"
+      - "Standard recebe mensagem de upgrade"
+
+  prem-calendar-sync-full:
+    description: "Sync completa com Google Calendar (Premium)"
+    behavior:
+      - "Sincronizacao bidirecional incluindo eventos recorrentes"
+      - "Requer subscription.plan = 'premium'"
+
+  prem-financeiro-completo:
+    description: "Dashboard financeiro completo (Premium)"
+    behavior:
+      - "Investimentos + metas + projecoes em um unico resumo"
+      - "Requer subscription.plan = 'premium'"
+
+  prem-exportar-pdf:
+    description: "Exportar relatorio em PDF (Premium)"
+    behavior:
+      - "Gera PDF via Gotenberg"
+      - "Envia documento via WhatsApp"
+      - "Requer subscription.plan = 'premium'"
+
+  # ============================================================
+  # BLOCO: SISTEMA
+  # ============================================================
+
+  sys-onboarding:
+    description: "Fluxo de boas-vindas para novo usuario"
+    workflow: "Main - Total Assistente"
+    behavior:
+      - "Primeira mensagem do usuario (normalmente 'Oi' ou 'Ola')"
+      - "Sistema verifica se usuario existe no Supabase"
+      - "Se novo: cria perfil, envia mensagem de boas-vindas, explica funcionalidades"
+      - "Se existente: cumprimento normal e menu de opcoes"
+    data_model:
+      tables: [profiles, phones, subscriptions]
+
+  sys-verificar-plano:
+    description: "Verificacao do plano do usuario"
+    behavior:
+      - "Usuario pergunta sobre seu plano"
+      - "Sistema consulta subscriptions e retorna detalhes"
+      - "Mostra features disponiveis no plano atual"
+
+  sys-ajuda:
+    description: "Menu de ajuda"
+    behavior:
+      - "Usuario pede ajuda ou envia 'menu'"
+      - "Sistema retorna lista de funcionalidades disponiveis"
+      - "Organizado por categoria (agenda, financeiro, etc)"
+
+  sys-rate-limit:
+    description: "Controle de rate limiting"
+    workflow: "Main - Total Assistente"
+    behavior:
+      - "Sistema registra cada mensagem em bot_events"
+      - "Conta mensagens nos ultimos X minutos"
+      - "Se acima do limite: retorna aviso amigavel"
+      - "Nao processa a mensagem quando rate limited"
+    data_model:
+      table: bot_events
