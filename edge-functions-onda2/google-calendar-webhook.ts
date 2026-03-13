@@ -89,28 +89,101 @@ serve(async (req) => {
   }
 });
 
+// --- CORRECAO: Refresh de access_token expirado ---
+// Antes, o webhook usava o access_token direto do banco sem verificar expiracao.
+// Agora verifica expires_at e faz refresh automatico via refresh_token.
+async function getValidAccessToken(userId: string): Promise<string | null> {
+  try {
+    const { data: tokens, error } = await supabase
+      .rpc('secure_get_google_tokens', { p_user_id: userId })
+      .single();
+
+    if (error || !tokens) {
+      console.error('Error getting tokens:', error);
+      return null;
+    }
+
+    if (!(tokens as any).is_connected) {
+      console.error('No connection found for user:', userId);
+      return null;
+    }
+
+    // Verificar se token expirou
+    if ((tokens as any).expires_at && new Date() >= new Date((tokens as any).expires_at)) {
+      console.log('Token expired, attempting refresh...');
+      return await refreshAccessToken(userId, (tokens as any).refresh_token || '');
+    }
+
+    return (tokens as any).access_token || null;
+  } catch (error) {
+    console.error('Error getting access token:', error);
+    return null;
+  }
+}
+
+async function refreshAccessToken(userId: string, refreshToken: string): Promise<string | null> {
+  try {
+    if (!refreshToken) {
+      console.error('No refresh token available');
+      return null;
+    }
+
+    const response = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_id: googleClientId,
+        client_secret: googleClientSecret,
+        refresh_token: refreshToken,
+        grant_type: 'refresh_token',
+      }),
+    });
+
+    const tokenData = await response.json();
+
+    if (!response.ok) {
+      console.error('Token refresh failed:', tokenData.error);
+      return null;
+    }
+
+    // Salvar novo access_token criptografado
+    const { error } = await supabase
+      .rpc('store_access_token', {
+        p_user_id: userId,
+        p_token: tokenData.access_token,
+        p_expires_at: new Date(Date.now() + tokenData.expires_in * 1000).toISOString()
+      });
+
+    if (error) {
+      console.error('Failed to store refreshed token:', error);
+      return null;
+    }
+
+    console.log('Token refreshed successfully');
+    return tokenData.access_token;
+  } catch (error) {
+    console.error('Error refreshing token:', error);
+    return null;
+  }
+}
+
 async function performIncrementalSync(userId: string): Promise<void> {
   console.log(`Starting incremental sync for user: ${userId}`);
 
   try {
-    // Buscar tokens e sync_token
-    const { data: tokens, error: tokenError } = await supabase
-      .rpc('secure_get_google_tokens', { p_user_id: userId })
-      .single();
-
-    if (tokenError || !tokens) {
-      console.error('Failed to get tokens:', tokenError);
+    // CORRECAO: Usar getValidAccessToken em vez de pegar token direto
+    const accessToken = await getValidAccessToken(userId);
+    if (!accessToken) {
+      console.error('No valid access token for user:', userId);
       return;
     }
-
-    const accessToken = (tokens as any).access_token;
     const { data: connection } = await supabase
       .from('google_calendar_connections')
       .select('sync_token')
       .eq('user_id', userId)
       .single();
 
-    let syncToken = connection?.sync_token;
+    const syncToken = connection?.sync_token;
     let nextPageToken: string | undefined = undefined;
     let newSyncToken: string | undefined = undefined;
 
