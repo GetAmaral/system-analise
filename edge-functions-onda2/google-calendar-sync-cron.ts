@@ -1,0 +1,154 @@
+import "https://deno.land/x/xhr@0.1.0/mod.ts";
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+
+const ALLOWED_ORIGINS = [
+  'https://totalassistente.com.br',
+  'https://www.totalassistente.com.br',
+];
+
+function getCorsHeaders(req: Request) {
+  const origin = req.headers.get('Origin') || '';
+  return {
+    'Access-Control-Allow-Origin': ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0],
+    'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  };
+}
+
+// --- CORRECAO A2: Comparacao constant-time ---
+function timingSafeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  const encoder = new TextEncoder();
+  const bufA = encoder.encode(a);
+  const bufB = encoder.encode(b);
+  let result = 0;
+  for (let i = 0; i < bufA.byteLength; i++) {
+    result |= bufA[i] ^ bufB[i];
+  }
+  return result === 0;
+}
+
+const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+const supabaseServiceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+
+const supabase = createClient(supabaseUrl, supabaseServiceRoleKey);
+
+serve(async (req) => {
+  const cors = getCorsHeaders(req);
+
+  if (req.method === 'OPTIONS') {
+    return new Response(null, { headers: cors });
+  }
+
+  // Verificar autorizacao — aceita apenas service_role_key (usado pelo pg_cron)
+  const authHeader = req.headers.get('authorization') || '';
+  // CORRECAO A2: usar comparacao constant-time
+  if (!timingSafeEqual(authHeader, `Bearer ${supabaseServiceRoleKey}`)) {
+    return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+      status: 401,
+      headers: { ...cors, 'Content-Type': 'application/json' }
+    });
+  }
+
+  try {
+    console.log('Starting scheduled sync for all users...');
+
+    const { data: connections, error } = await supabase
+      .from('google_calendar_connections')
+      .select('user_id, last_sync_at, webhook_expiration')
+      .eq('is_connected', true);
+
+    if (error) {
+      throw new Error(`Failed to fetch connections: ${error.message}`);
+    }
+
+    if (!connections || connections.length === 0) {
+      console.log('No active connections to sync');
+      return new Response(JSON.stringify({ message: 'No active connections' }), {
+        status: 200,
+        headers: { ...cors, 'Content-Type': 'application/json' }
+      });
+    }
+
+    console.log(`Found ${connections.length} active connections`);
+
+    await supabase.rpc('cleanup_expired_google_webhooks');
+
+    let synced = 0;
+    let errors = 0;
+
+    const batchSize = 10;
+    for (let i = 0; i < connections.length; i += batchSize) {
+      const batch = connections.slice(i, i + batchSize);
+
+      await Promise.all(
+        batch.map(async (conn) => {
+          try {
+            if (conn.last_sync_at) {
+              const lastSync = new Date(conn.last_sync_at);
+              const now = new Date();
+              const diffMinutes = (now.getTime() - lastSync.getTime()) / 1000 / 60;
+
+              if (diffMinutes < 10) {
+                return;
+              }
+            }
+
+            let needsWebhookRenewal = false;
+            if (conn.webhook_expiration) {
+              const expiration = new Date(conn.webhook_expiration);
+              const now = new Date();
+              const hoursUntilExpiration = (expiration.getTime() - now.getTime()) / 1000 / 60 / 60;
+              needsWebhookRenewal = hoursUntilExpiration < 24;
+            }
+
+            const { error: syncError } = await supabase.functions.invoke('google-calendar', {
+              body: {
+                action: 'cron-sync',
+                userId: conn.user_id,
+                renewWebhook: needsWebhookRenewal
+              },
+              headers: {
+                'Authorization': `Bearer ${supabaseServiceRoleKey}`
+              }
+            });
+
+            if (syncError) {
+              console.error(`Sync error for user ${conn.user_id}:`, syncError);
+              errors++;
+            } else {
+              synced++;
+            }
+
+          } catch (err) {
+            console.error(`Error syncing user ${conn.user_id}:`, err);
+            errors++;
+          }
+        })
+      );
+    }
+
+    console.log(`Cron sync completed: ${synced} synced, ${errors} errors`);
+
+    return new Response(
+      JSON.stringify({
+        success: true,
+        synced,
+        errors,
+        total: connections.length
+      }),
+      {
+        status: 200,
+        headers: { ...cors, 'Content-Type': 'application/json' }
+      }
+    );
+
+  } catch (error) {
+    console.error('Cron sync error:', error);
+    // CORRECAO A8: nao vazar mensagem de erro interna
+    return new Response(JSON.stringify({ error: 'Internal sync error' }), {
+      status: 500,
+      headers: { ...cors, 'Content-Type': 'application/json' }
+    });
+  }
+});
