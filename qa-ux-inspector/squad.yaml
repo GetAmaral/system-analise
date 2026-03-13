@@ -1,0 +1,133 @@
+name: "qa-ux-inspector"
+version: "1.0.0"
+description: "Squad de QA & UX para testar as 29 features do Total Assistente via webhook N8N DEV, verificar resultados em Supabase (read-only) e Google Calendar, e gerar relatorios priorizados de correcoes"
+author: "AIOS-Total"
+license: MIT
+slashPrefix: inspector
+
+aios:
+  minVersion: "2.1.0"
+  type: squad
+
+components:
+  agents:
+    - agents/inspector.md
+  tasks:
+    - tasks/test-feature.md
+    - tasks/audit-feature-docs.md
+    - tasks/verify-database.md
+    - tasks/verify-google-calendar.md
+    - tasks/generate-feature-report.md
+    - tasks/generate-priority-report.md
+    - tasks/suggest-corrections.md
+  workflows:
+    - workflows/full-feature-audit.yaml
+    - workflows/batch-test-all.yaml
+  checklists:
+    - checklists/test-checklist.md
+    - checklists/ux-checklist.md
+  templates:
+    - templates/feature-test-report-tmpl.md
+    - templates/priority-report-tmpl.md
+    - templates/correction-guide-tmpl.md
+  tools: []
+  scripts: []
+
+config:
+  extends: none
+
+dependencies:
+  node: []
+  python: []
+  squads:
+    - analisador-n8n  # herda contexto do sistema e acesso SSH read-only
+
+requires:
+  ssh:
+    host: "188.245.190.178"
+    user: "root"
+    key: "~/.ssh/totalassistente"
+    policy: "read-only"
+    inherited_from: "analisador-n8n"
+  supabase:
+    mode: "read-only"
+    project_ref: "ldbdtakddxznfridsarn"
+    url: "https://ldbdtakddxznfridsarn.supabase.co"
+    key_type: "anon"
+    key_env_var: "SUPABASE_ANON_KEY"
+    allowed_operations:
+      - SELECT
+      - "list_tables"
+      - "get_table_schema"
+    blocked_operations:
+      - INSERT
+      - UPDATE
+      - DELETE
+      - DROP
+      - ALTER
+      - CREATE
+      - TRUNCATE
+  n8n:
+    mode: "test-via-dev-webhook"
+    dev_webhook_base: "https://n8n.totalassistente.com.br/webhook-test/"
+    policy: "somente-dev-webhook"
+    description: "Envio de payloads simulados APENAS pelo webhook DEV/TEST do N8N. NUNCA usar webhook de producao."
+    allowed_operations:
+      - "HTTP POST para webhook-test/ (DEV)"
+      - "docker logs (read-only via SSH)"
+    blocked_operations:
+      - "HTTP POST para webhook/ (PRODUCAO)"
+      - "create_workflow"
+      - "update_workflow"
+      - "delete_workflow"
+      - "activate_workflow"
+      - "deactivate_workflow"
+  http:
+    policy: "dev-webhook-only"
+    allowed_targets:
+      - "https://n8n.totalassistente.com.br/webhook-test/*"
+      - "https://ldbdtakddxznfridsarn.supabase.co/rest/v1/*"
+    blocked_targets:
+      - "https://n8n.totalassistente.com.br/webhook/*"
+    description: "HTTP requests permitidos APENAS para webhook-test (DEV) e Supabase REST (read-only)"
+  github:
+    mode: "read-only"
+    allowed_operations:
+      - "gh issue list"
+      - "gh issue view"
+      - "gh pr list"
+      - "gh pr view"
+    blocked_operations:
+      - "gh issue create"
+      - "gh pr create"
+      - "git push"
+      - "git commit"
+
+guardrails:
+  mode: "read-test"
+  severity: "BLOCK"
+  description: |
+    Este squad opera em modo READ + TEST:
+    - LEITURA: Supabase (read-only), logs Docker (via SSH read-only), GitHub (read-only)
+    - TESTE: Envio de mensagens simuladas APENAS via webhook-test (DEV) do N8N
+    - BLOQUEADO: Qualquer escrita em producao, uso de webhook de producao, modificacao de dados
+  rules:
+    - "NUNCA enviar requests para webhook de PRODUCAO (/webhook/)"
+    - "SEMPRE usar webhook de DEV/TEST (/webhook-test/)"
+    - "NUNCA escrever, modificar ou deletar dados em Supabase"
+    - "NUNCA modificar workflows N8N"
+    - "NUNCA fazer deploy ou restart de containers"
+    - "Payloads de teste devem usar dados ficticios identificaveis (prefixo TEST_)"
+    - "Verificacoes de banco sao SOMENTE SELECT"
+    - "Todo output vai para squads/qa-ux-inspector/output/"
+
+tags:
+  - qa
+  - ux
+  - testing
+  - n8n
+  - supabase
+  - google-calendar
+  - webhook-dev
+  - total-assistente
+  - inspector
