@@ -1,0 +1,90 @@
+name: batch-test-all
+version: 1.0.0
+description: "Bateria completa de testes: executa full-feature-audit para todas as 29 features e gera relatorio priorizado"
+squad: qa-ux-inspector
+
+triggers:
+  - type: manual
+    command: "*test-all"
+  - type: manual
+    command: "*audit-all"
+
+inputs:
+  - name: scope
+    type: string
+    required: false
+    default: "all"
+    description: "Escopo: all | block:{nome} (agenda, financeiro, relatorios, premium, sistema)"
+  - name: scenario_type
+    type: string
+    required: false
+    default: "happy_path"
+    description: "Tipo de cenario para batch: happy_path (rapido) ou all (completo)"
+  - name: include_audit
+    type: boolean
+    required: false
+    default: false
+    description: "Incluir auditoria de docs em cada feature (mais lento)"
+
+steps:
+  - id: verify-dev-mode
+    name: "Step 1: Verificar Modo DEV"
+    description: "Confirmar que todos os endpoints apontam para webhook-test (DEV)"
+    action: gate
+    conditions:
+      - "URL de teste contem /webhook-test/"
+      - "Payloads usam prefixo TEST_"
+    on_error: abort
+    abort_message: "ABORTADO: Falha na verificacao de modo DEV."
+
+  - id: load-catalog
+    name: "Step 2: Carregar Catalogo de Features"
+    description: "Carregar data/features-catalog.yaml e filtrar por scope"
+    action: load
+    file: data/features-catalog.yaml
+    depends_on: [verify-dev-mode]
+    filter: "{{inputs.scope}}"
+
+  - id: batch-test
+    name: "Step 3: Executar Testes em Batch"
+    description: "Executar full-feature-audit para cada feature do catalogo"
+    action: foreach
+    collection: "{{steps.load-catalog.features}}"
+    depends_on: [load-catalog]
+    workflow: full-feature-audit.yaml
+    inputs:
+      feature_id: "{{item.id}}"
+      scenario_type: "{{inputs.scenario_type}}"
+      include_audit: "{{inputs.include_audit}}"
+    on_error: continue
+    progress: "Testando feature {{item.id}} ({{index}}/{{total}})"
+
+  - id: generate-priority-report
+    name: "Step 4: Gerar Relatorio Priorizado"
+    action: task
+    task: generate-priority-report.md
+    depends_on: [batch-test]
+    inputs:
+      feature_reports: "{{steps.batch-test.outputs}}"
+      scope: "{{inputs.scope}}"
+    on_error: abort
+
+  - id: suggest-corrections
+    name: "Step 5: Gerar Guia de Correcoes"
+    action: task
+    task: suggest-corrections.md
+    depends_on: [generate-priority-report]
+    inputs:
+      priority_report: "{{steps.generate-priority-report.output}}"
+      feature_reports: "{{steps.batch-test.outputs}}"
+    on_error: continue
+
+completion:
+  on_success:
+    message: |
+      Bateria completa finalizada!
+      - Features testadas: {{steps.batch-test.total}}
+      - Relatorio priorizado: output/feature-reports/
+      - Guia de correcoes: output/corrections/
+  on_failure:
+    message: "Bateria encontrou problemas. Resultados parciais disponiveis em output/"
