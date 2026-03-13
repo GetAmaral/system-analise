@@ -593,6 +593,8 @@ async function handleSyncFromGoogle(cors: Record<string, string>, userId: string
   }
 }
 
+// CORRECAO: performInitialSync agora PAGINA todos os eventos
+// Antes buscava so 500, nunca chegava na ultima pagina, sync_token nunca era salvo
 async function performInitialSync(userId: string): Promise<{
   success: boolean;
   imported: number;
@@ -607,39 +609,10 @@ async function performInitialSync(userId: string): Promise<{
       throw new Error('No valid access token');
     }
 
-    const timeMin = new Date();
-    timeMin.setMonth(timeMin.getMonth() - 1);
-
-    const timeMax = new Date();
-    timeMax.setMonth(timeMax.getMonth() + 6);
-
-    const url = new URL('https://www.googleapis.com/calendar/v3/calendars/primary/events');
-    url.searchParams.set('timeMin', timeMin.toISOString());
-    url.searchParams.set('timeMax', timeMax.toISOString());
-    url.searchParams.set('maxResults', '500');
-    url.searchParams.set('singleEvents', 'true');
-    url.searchParams.set('orderBy', 'startTime');
-
-    console.log('Fetching events from Google Calendar...');
-    const response = await fetch(url.toString(), {
-      headers: {
-        'Authorization': `Bearer ${accessToken}`,
-      },
-    });
-
-    if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(`Google API error: ${errorData.error?.message || response.status}`);
-    }
-
-    const data = await response.json();
-    const googleEvents = data.items || [];
-    const nextSyncToken = data.nextSyncToken;
-    console.log(`Found ${googleEvents.length} events in Google Calendar`);
-
+    // Buscar eventos existentes do usuario (para nao duplicar)
     const { data: existingEvents, error: fetchError } = await supabase
       .from('calendar')
-      .select('session_event_id_google, event_name, start_event')
+      .select('session_event_id_google')
       .eq('user_id', userId)
       .not('session_event_id_google', 'is', null);
 
@@ -654,63 +627,101 @@ async function performInitialSync(userId: string): Promise<{
 
     console.log(`Found ${existingGoogleIds.size} existing synced events in database`);
 
+    const timeMin = new Date();
+    timeMin.setMonth(timeMin.getMonth() - 1);
+    const timeMax = new Date();
+    timeMax.setMonth(timeMax.getMonth() + 6);
+
     let imported = 0;
     let skipped = 0;
     const errors: string[] = [];
-    const eventsToInsert: any[] = [];
+    let pageToken: string | undefined;
+    let nextSyncToken: string | undefined;
+    let page = 0;
 
-    for (const gEvent of googleEvents) {
-      try {
-        if (existingGoogleIds.has(gEvent.id)) {
-          skipped++;
-          continue;
-        }
+    // Paginar TODOS os eventos ate obter o nextSyncToken
+    do {
+      page++;
+      const url = new URL('https://www.googleapis.com/calendar/v3/calendars/primary/events');
 
-        if (!gEvent.start?.dateTime || !gEvent.end?.dateTime) {
-          skipped++;
-          continue;
-        }
-
-        eventsToInsert.push({
-          user_id: userId,
-          event_name: (gEvent.summary || 'Sem titulo').substring(0, 255),
-          desc_event: (gEvent.description || '').substring(0, 5000),
-          start_event: gEvent.start.dateTime,
-          end_event: gEvent.end.dateTime,
-          session_event_id_google: gEvent.id,
-          reminder: false,
-          remembered: false,
-          timezone: gEvent.start.timeZone || 'America/Sao_Paulo',
-          calendar_email_created: gEvent.creator?.email || null,
-          active: true
-        });
-
-      } catch (err) {
-        console.error(`Error processing event ${gEvent.id}:`, err);
-        errors.push(`Event ${gEvent.summary}: ${(err as Error).message}`);
+      if (pageToken) {
+        url.searchParams.set('pageToken', pageToken);
+      } else {
+        url.searchParams.set('timeMin', timeMin.toISOString());
+        url.searchParams.set('timeMax', timeMax.toISOString());
+        url.searchParams.set('orderBy', 'startTime');
       }
-    }
+      url.searchParams.set('maxResults', '250');
+      url.searchParams.set('singleEvents', 'true');
 
-    if (eventsToInsert.length > 0) {
-      console.log(`Inserting ${eventsToInsert.length} new events...`);
+      console.log(`Fetching page ${page} from Google Calendar...`);
+      const response = await fetch(url.toString(), {
+        headers: { 'Authorization': `Bearer ${accessToken}` },
+      });
 
-      for (let i = 0; i < eventsToInsert.length; i += 100) {
-        const batch = eventsToInsert.slice(i, i + 100);
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(`Google API error: ${errorData.error?.message || response.status}`);
+      }
 
-        const { error: insertError } = await supabase
-          .from('calendar')
-          .insert(batch);
+      const data = await response.json();
+      const googleEvents = data.items || [];
+      pageToken = data.nextPageToken;
+      nextSyncToken = data.nextSyncToken;
 
-        if (insertError) {
-          console.error('Batch insert error:', insertError);
-          errors.push(`Batch ${i / 100 + 1}: ${insertError.message}`);
-        } else {
-          imported += batch.length;
-          console.log(`Inserted batch ${i / 100 + 1}: ${batch.length} events`);
+      console.log(`Page ${page}: ${googleEvents.length} events`);
+
+      // Processar eventos desta pagina
+      const eventsToInsert: any[] = [];
+
+      for (const gEvent of googleEvents) {
+        try {
+          if (existingGoogleIds.has(gEvent.id)) {
+            skipped++;
+            continue;
+          }
+
+          if (!gEvent.start?.dateTime || !gEvent.end?.dateTime) {
+            skipped++;
+            continue;
+          }
+
+          eventsToInsert.push({
+            user_id: userId,
+            event_name: (gEvent.summary || 'Sem titulo').substring(0, 255),
+            desc_event: (gEvent.description || '').substring(0, 5000),
+            start_event: gEvent.start.dateTime,
+            end_event: gEvent.end.dateTime,
+            session_event_id_google: gEvent.id,
+            reminder: false,
+            remembered: false,
+            timezone: gEvent.start.timeZone || 'America/Sao_Paulo',
+            calendar_email_created: gEvent.creator?.email || null,
+            active: true
+          });
+        } catch (err) {
+          console.error(`Error processing event ${gEvent.id}:`, err);
+          errors.push(`Event ${gEvent.summary}: ${(err as Error).message}`);
         }
       }
-    }
 
+      // Inserir em batch (100 por vez)
+      if (eventsToInsert.length > 0) {
+        for (let i = 0; i < eventsToInsert.length; i += 100) {
+          const batch = eventsToInsert.slice(i, i + 100);
+          const { error: insertError } = await supabase.from('calendar').insert(batch);
+
+          if (insertError) {
+            console.error('Batch insert error:', insertError);
+            errors.push(`Page ${page} batch: ${insertError.message}`);
+          } else {
+            imported += batch.length;
+          }
+        }
+      }
+    } while (pageToken);
+
+    // Salvar sync_token e timestamp
     const updateData: any = { last_sync_at: new Date().toISOString() };
     if (nextSyncToken) {
       updateData.sync_token = nextSyncToken;

@@ -1,83 +1,69 @@
 # Correcao Final - Google Calendar Sync Bidirecional
 
-## Bugs Encontrados
+## Bugs Corrigidos
 
-### BUG 1 (CRITICO): Trigger fire-and-forget — Google Event ID nunca volta pro banco
-- Quando voce cria evento no app, o trigger chama a edge function via `http_post`
-- A edge function cria o evento no Google e recebe o `googleEventId`
-- Mas **ninguem grava** esse ID de volta na coluna `session_event_id_google`
-- Resultado: duplicatas no Google, impossivel atualizar/deletar eventos
-- **Existia ANTES das mudancas de seguranca**
-
-### BUG 2: Cron job usa anon key em vez de service_role_key
-- O `pg_cron` envia a anon key no header Authorization
-- A edge function `google-calendar-sync-cron` rejeita tudo que nao for service_role_key
-- Resultado: sync periodico NUNCA funciona, webhooks nunca renovam (morrem em 7 dias)
-- **Existia ANTES das mudancas de seguranca**
-
-### BUG 3: Webhook nao fazia refresh de token expirado
-- O `google-calendar-webhook` pegava o access_token direto sem verificar expiracao
-- Token expira em 1 hora, webhook falhava com 401 do Google
-- **Corrigido na Onda 2, incluido aqui tambem**
-
-### BUG 4: Tokens com invalid_grant
-- 17 de 18 users tem access_token expirado
-- Alguns refresh_tokens podem ter sido revogados pelo Google
-- **Solucao: users afetados reconectam (1 clique no app)**
-
----
+| Bug | Descricao | Impacto |
+|-----|-----------|---------|
+| BUG 1 | Trigger fire-and-forget: Google Event ID nunca voltava pro banco | Duplicatas, impossivel editar/deletar |
+| BUG 2 | Cron usava anon key em vez de service_role_key | Sync periodico nunca funcionou |
+| BUG 3 | Webhook nao fazia refresh de token expirado | 401 do Google apos 1 hora |
+| BUG 4 | performInitialSync nao paginava (buscava 500 de milhares) | sync_token nunca salvo, full sync infinito |
 
 ## Ordem de Execucao
 
-### PASSO 1 — SQL: Corrigir o trigger (write-back do Google Event ID)
-1. Abra o SQL Editor no Supabase Dashboard
-2. Cole o conteudo de `01-fix-trigger-writeback.sql`
-3. Execute
-4. Verifique: deve retornar "CREATE FUNCTION" e "CREATE TRIGGER"
+### PASSO 1 — Edge Function: google-calendar (PRIMEIRO!)
+> Precisa estar no ar antes do trigger, senao o trigger chama a versao antiga
 
-### PASSO 2 — SQL: Corrigir o cron job (service_role_key)
-1. Abra o SQL Editor
-2. Cole o conteudo de `02-fix-cron-key.sql`
-3. Execute
-4. Verifique: deve retornar "schedule" com um ID
-
-### PASSO 3 — Edge Function: google-calendar (write-back)
-1. Abra o Supabase Dashboard > Edge Functions > google-calendar
-2. Substitua TODO o conteudo pelo arquivo `03-google-calendar.ts`
+1. Supabase Dashboard > Edge Functions > **google-calendar**
+2. Substitua TODO o conteudo pelo arquivo **`03-google-calendar.ts`**
 3. Salve/Deploy
+4. **Mudancas**: write-back do Google Event ID + performInitialSync com paginacao
 
-### PASSO 4 — Edge Function: google-calendar-webhook (token refresh)
-1. Abra Edge Functions > google-calendar-webhook
-2. Substitua TODO o conteudo pelo arquivo `04-google-calendar-webhook.ts`
+### PASSO 2 — Edge Function: google-calendar-webhook
+1. Edge Functions > **google-calendar-webhook**
+2. Substitua TODO o conteudo pelo arquivo **`04-google-calendar-webhook.ts`**
 3. Salve/Deploy
+4. **Mudanca**: token refresh automatico
 
-### PASSO 5 — Edge Function: google-calendar-sync-cron (sem mudanca, mas incluso)
-1. Abra Edge Functions > google-calendar-sync-cron
-2. Verifique se o conteudo bate com `05-google-calendar-sync-cron.ts`
-3. Se diferente, substitua e deploy
+### PASSO 3 — SQL: Corrigir o trigger
+1. SQL Editor > cole o conteudo de **`01-fix-trigger-writeback.sql`**
+2. Execute
+3. Deve retornar: CREATE FUNCTION + CREATE TRIGGER
+4. **Mudanca**: trigger envia `localEventId` para a edge function fazer write-back
 
-### PASSO 6 — SQL: Identificar users que precisam reconectar
-1. Abra o SQL Editor
-2. Cole o conteudo de `06-check-users-status.sql`
-3. Execute
-4. Users com `needs_reconnect = true` precisam reconectar o Google Calendar
+### PASSO 4 — SQL: Corrigir o cron job
+1. SQL Editor > cole o conteudo de **`02-fix-cron-key.sql`**
+2. Execute
+3. Deve retornar: unschedule + schedule
+4. **Mudanca**: cron usa service_role_key do vault
 
-### PASSO 7 — Testar
-1. Crie um evento no app Total Assistente
-2. Verifique se aparece no Google Calendar (aguarde ~5 segundos)
-3. Crie um evento no Google Calendar
-4. Verifique se aparece no app (aguarde webhook ou proximo sync)
-5. Edite um evento no app e veja se atualiza no Google
-6. Delete um evento no app e veja se some do Google
+### PASSO 5 — Verificar
+1. SQL Editor > cole o conteudo de **`06-check-users-status.sql`**
+2. Execute
+3. Veja o status de cada user
 
-### PASSO 8 — Verificar logs
-```
--- No SQL Editor, verificar respostas do http_post:
-SELECT status_code, LEFT(content, 200), created
-FROM net._http_response
-ORDER BY created DESC
-LIMIT 10;
-```
-- Status 200 = sucesso
-- Status 401 = problema de autenticacao
-- Status 500 = erro na edge function
+### PASSO 6 — Testar
+1. Crie um evento no app Total > veja se aparece no Google Calendar (~5s)
+2. Crie um evento no Google Calendar > veja se aparece no app (~10s)
+3. Edite um evento no app > veja se atualiza no Google
+4. Delete um evento no app > veja se some do Google
+
+### PASSO 7 — Limpar
+1. Delete a edge function **fix-all-users-sync** (temporaria, ja usada)
+2. Remova do config.toml: `[functions.fix-all-users-sync]`
+
+## Arquivos
+
+| Arquivo | Onde aplicar | Tipo |
+|---------|-------------|------|
+| `01-fix-trigger-writeback.sql` | SQL Editor | SQL |
+| `02-fix-cron-key.sql` | SQL Editor | SQL |
+| `03-google-calendar.ts` | Edge Functions > google-calendar | Edge Function |
+| `04-google-calendar-webhook.ts` | Edge Functions > google-calendar-webhook | Edge Function |
+| `05-google-calendar-sync-cron.ts` | Edge Functions > google-calendar-sync-cron (referencia) | Edge Function |
+| `06-check-users-status.sql` | SQL Editor (diagnostico) | SQL |
+| `07-fix-all-users-sync.ts` | Ja foi usada, pode deletar | Temporaria |
+
+## Users que precisam reconectar (1 clique no app)
+- `6d647cd8` — refresh_token revogado pelo Google (invalid_grant)
+- `d51eea91` — Google retornou 403 (possivel revogacao de acesso)
