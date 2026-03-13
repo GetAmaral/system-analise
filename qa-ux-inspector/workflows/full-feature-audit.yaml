@@ -1,0 +1,98 @@
+name: full-feature-audit
+version: 1.0.0
+description: "Auditoria completa de uma feature: teste via webhook DEV + verificacao banco + verificacao calendario + relatorio"
+squad: qa-ux-inspector
+
+triggers:
+  - type: manual
+    command: "*test"
+  - type: manual
+    command: "*audit"
+
+inputs:
+  - name: feature_id
+    type: string
+    required: true
+    description: "ID da feature conforme features-catalog.yaml"
+  - name: scenario_type
+    type: string
+    required: false
+    default: "all"
+    description: "Tipo de cenario: all, happy_path, edge_case, error"
+  - name: include_audit
+    type: boolean
+    required: false
+    default: true
+    description: "Incluir auditoria de documentacao"
+
+steps:
+  - id: verify-dev-mode
+    name: "Step 1: Verificar Modo DEV"
+    description: "Confirmar que todos os endpoints apontam para webhook-test (DEV) e NAO webhook (PROD)"
+    action: gate
+    conditions:
+      - "URL de teste contem /webhook-test/"
+      - "URL de teste NAO contem /webhook/ sem -test"
+      - "Payloads usam prefixo TEST_"
+    on_error: abort
+    abort_message: "ABORTADO: Falha na verificacao de modo DEV. Confirme que esta usando webhook-test."
+
+  - id: test-feature
+    name: "Step 2: Testar Feature via Webhook DEV"
+    action: task
+    task: test-feature.md
+    depends_on: [verify-dev-mode]
+    inputs:
+      feature_id: "{{inputs.feature_id}}"
+      scenario_type: "{{inputs.scenario_type}}"
+    on_error: continue
+
+  - id: verify-database
+    name: "Step 3: Verificar Dados no Supabase"
+    action: task
+    task: verify-database.md
+    depends_on: [test-feature]
+    inputs:
+      feature_id: "{{inputs.feature_id}}"
+      expected_data: "{{steps.test-feature.expected_db_state}}"
+    on_error: continue
+
+  - id: verify-calendar
+    name: "Step 4: Verificar Google Calendar (se aplicavel)"
+    action: task
+    task: verify-google-calendar.md
+    depends_on: [test-feature]
+    condition: "feature.block == 'agenda'"
+    inputs:
+      user_id: "{{steps.test-feature.test_user_id}}"
+      feature_id: "{{inputs.feature_id}}"
+    on_error: continue
+
+  - id: audit-docs
+    name: "Step 5: Auditar Documentacao vs Realidade"
+    action: task
+    task: audit-feature-docs.md
+    depends_on: [test-feature]
+    condition: "{{inputs.include_audit}} == true"
+    inputs:
+      feature_id: "{{inputs.feature_id}}"
+    on_error: continue
+
+  - id: generate-report
+    name: "Step 6: Gerar Relatorio da Feature"
+    action: task
+    task: generate-feature-report.md
+    depends_on: [test-feature, verify-database, verify-calendar, audit-docs]
+    inputs:
+      feature_id: "{{inputs.feature_id}}"
+      test_results: "{{steps.test-feature.output}}"
+      db_verification: "{{steps.verify-database.output}}"
+      gcal_verification: "{{steps.verify-calendar.output}}"
+      audit_results: "{{steps.audit-docs.output}}"
+    on_error: abort
+
+completion:
+  on_success:
+    message: "Auditoria completa da feature {{inputs.feature_id}}. Relatorio salvo em output/feature-reports/"
+  on_failure:
+    message: "Auditoria encontrou problemas. Resultados parciais podem estar disponiveis em output/"
