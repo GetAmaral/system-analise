@@ -1,0 +1,445 @@
+# Catalogo de Features — Total Assistente
+# 29 features organizadas por bloco funcional
+# Atualizado: 2026-03-13
+
+version: 1.0.0
+last_updated: "2026-03-13"
+total_features: 29
+
+features:
+
+  # ============================================================
+  # BLOCO: AGENDA (8 features)
+  # ============================================================
+
+  - id: agenda-criar-evento
+    name: "Criar Evento na Agenda"
+    block: agenda
+    priority: CRITICA
+    n8n_webhook: "webhook-test/agenda-criar"
+    supabase_tables:
+      - calendar_events
+      - profiles
+    expected_behavior: "Cria evento no Google Calendar e registra no Supabase com data, hora, titulo e descricao"
+    test_scenarios:
+      - happy_path_criar_evento_simples
+      - happy_path_criar_evento_com_descricao
+      - edge_case_evento_feriado
+      - edge_case_evento_fim_de_semana
+      - error_data_passada
+      - error_conflito_horario
+
+  - id: agenda-listar-eventos
+    name: "Listar Eventos da Agenda"
+    block: agenda
+    priority: CRITICA
+    n8n_webhook: "webhook-test/agenda-listar"
+    supabase_tables:
+      - calendar_events
+      - profiles
+    expected_behavior: "Retorna lista de eventos do usuario para o periodo solicitado (hoje, semana, mes)"
+    test_scenarios:
+      - happy_path_listar_hoje
+      - happy_path_listar_semana
+      - happy_path_listar_mes
+      - edge_case_sem_eventos
+      - edge_case_muitos_eventos
+
+  - id: agenda-editar-evento
+    name: "Editar Evento na Agenda"
+    block: agenda
+    priority: ALTA
+    n8n_webhook: "webhook-test/agenda-editar"
+    supabase_tables:
+      - calendar_events
+    expected_behavior: "Edita evento existente no Google Calendar e atualiza no Supabase"
+    test_scenarios:
+      - happy_path_editar_titulo
+      - happy_path_editar_horario
+      - edge_case_evento_inexistente
+      - error_dados_invalidos
+
+  - id: agenda-excluir-evento
+    name: "Excluir Evento da Agenda"
+    block: agenda
+    priority: ALTA
+    n8n_webhook: "webhook-test/agenda-excluir"
+    supabase_tables:
+      - calendar_events
+    expected_behavior: "Remove evento do Google Calendar e marca como excluido no Supabase"
+    test_scenarios:
+      - happy_path_excluir_evento
+      - edge_case_evento_inexistente
+      - edge_case_evento_passado
+
+  - id: agenda-buscar-horario-livre
+    name: "Buscar Horario Livre"
+    block: agenda
+    priority: MEDIA
+    n8n_webhook: "webhook-test/agenda-horario-livre"
+    supabase_tables:
+      - calendar_events
+    expected_behavior: "Retorna horarios livres do usuario para uma data especifica"
+    test_scenarios:
+      - happy_path_dia_com_eventos
+      - happy_path_dia_livre
+      - edge_case_dia_lotado
+
+  - id: agenda-lembrete
+    name: "Configurar Lembrete"
+    block: agenda
+    priority: MEDIA
+    n8n_webhook: "webhook-test/agenda-lembrete"
+    supabase_tables:
+      - calendar_events
+      - bot_events
+    expected_behavior: "Configura lembrete para evento existente com antecedencia especificada"
+    test_scenarios:
+      - happy_path_lembrete_30min
+      - happy_path_lembrete_1hora
+      - edge_case_lembrete_duplicado
+
+  - id: agenda-sync-google
+    name: "Sincronizar com Google Calendar"
+    block: agenda
+    priority: ALTA
+    n8n_webhook: "webhook-test/agenda-sync"
+    supabase_tables:
+      - calendar_events
+      - profiles
+    expected_behavior: "Sincroniza eventos entre Supabase e Google Calendar bidirecionalmente"
+    test_scenarios:
+      - happy_path_sync_completa
+      - edge_case_conflito_sync
+      - error_google_api_indisponivel
+
+  - id: agenda-resumo-dia
+    name: "Resumo do Dia"
+    block: agenda
+    priority: MEDIA
+    n8n_webhook: "webhook-test/agenda-resumo"
+    supabase_tables:
+      - calendar_events
+    expected_behavior: "Retorna resumo formatado dos eventos do dia com horarios e detalhes"
+    test_scenarios:
+      - happy_path_dia_com_eventos
+      - happy_path_dia_sem_eventos
+      - edge_case_muitos_eventos_dia
+
+  # ============================================================
+  # BLOCO: FINANCEIRO (9 features)
+  # ============================================================
+
+  - id: fin-registrar-despesa
+    name: "Registrar Despesa"
+    block: financeiro
+    priority: CRITICA
+    n8n_webhook: "webhook-test/fin-despesa"
+    supabase_tables:
+      - expenses
+      - profiles
+    expected_behavior: "Registra despesa com valor, categoria, descricao e data no Supabase"
+    test_scenarios:
+      - happy_path_despesa_simples
+      - happy_path_despesa_com_categoria
+      - edge_case_valor_centavos
+      - edge_case_valor_alto
+      - error_valor_negativo
+      - error_valor_zero
+
+  - id: fin-registrar-receita
+    name: "Registrar Receita"
+    block: financeiro
+    priority: CRITICA
+    n8n_webhook: "webhook-test/fin-receita"
+    supabase_tables:
+      - expenses
+      - profiles
+    expected_behavior: "Registra receita com valor, fonte, descricao e data no Supabase"
+    test_scenarios:
+      - happy_path_receita_simples
+      - happy_path_receita_com_fonte
+      - error_valor_invalido
+
+  - id: fin-consultar-saldo
+    name: "Consultar Saldo"
+    block: financeiro
+    priority: CRITICA
+    n8n_webhook: "webhook-test/fin-saldo"
+    supabase_tables:
+      - expenses
+      - profiles
+    expected_behavior: "Retorna saldo atual calculado (receitas - despesas) do periodo"
+    test_scenarios:
+      - happy_path_saldo_positivo
+      - happy_path_saldo_negativo
+      - edge_case_sem_transacoes
+
+  - id: fin-listar-despesas
+    name: "Listar Despesas"
+    block: financeiro
+    priority: ALTA
+    n8n_webhook: "webhook-test/fin-listar-despesas"
+    supabase_tables:
+      - expenses
+    expected_behavior: "Lista despesas do usuario filtradas por periodo e/ou categoria"
+    test_scenarios:
+      - happy_path_listar_mes
+      - happy_path_listar_por_categoria
+      - edge_case_sem_despesas
+      - edge_case_muitas_despesas
+
+  - id: fin-meta-financeira
+    name: "Definir Meta Financeira"
+    block: financeiro
+    priority: MEDIA
+    n8n_webhook: "webhook-test/fin-meta"
+    supabase_tables:
+      - financial_goals
+      - profiles
+    expected_behavior: "Cria ou atualiza meta financeira com valor alvo e prazo"
+    test_scenarios:
+      - happy_path_criar_meta
+      - happy_path_atualizar_meta
+      - edge_case_meta_ja_atingida
+
+  - id: fin-progresso-meta
+    name: "Verificar Progresso da Meta"
+    block: financeiro
+    priority: MEDIA
+    n8n_webhook: "webhook-test/fin-progresso-meta"
+    supabase_tables:
+      - financial_goals
+      - expenses
+    expected_behavior: "Retorna progresso atual da meta financeira com percentual e valor restante"
+    test_scenarios:
+      - happy_path_meta_em_andamento
+      - happy_path_meta_atingida
+      - edge_case_sem_meta_definida
+
+  - id: fin-categorias
+    name: "Gerenciar Categorias"
+    block: financeiro
+    priority: BAIXA
+    n8n_webhook: "webhook-test/fin-categorias"
+    supabase_tables:
+      - expenses
+    expected_behavior: "Lista, cria ou edita categorias de despesas/receitas"
+    test_scenarios:
+      - happy_path_listar_categorias
+      - happy_path_criar_categoria
+      - edge_case_categoria_duplicada
+
+  - id: fin-investimentos
+    name: "Registrar Investimento"
+    block: financeiro
+    priority: MEDIA
+    n8n_webhook: "webhook-test/fin-investimento"
+    supabase_tables:
+      - investments
+      - profiles
+    expected_behavior: "Registra investimento com tipo, valor, rentabilidade e data"
+    test_scenarios:
+      - happy_path_registrar_investimento
+      - edge_case_investimento_resgate
+      - error_valor_invalido
+
+  - id: fin-extrato
+    name: "Gerar Extrato"
+    block: financeiro
+    priority: ALTA
+    n8n_webhook: "webhook-test/fin-extrato"
+    supabase_tables:
+      - expenses
+      - investments
+    expected_behavior: "Gera extrato detalhado com todas as movimentacoes do periodo"
+    test_scenarios:
+      - happy_path_extrato_mensal
+      - happy_path_extrato_semanal
+      - edge_case_sem_movimentacoes
+
+  # ============================================================
+  # BLOCO: RELATORIOS (4 features)
+  # ============================================================
+
+  - id: rel-relatorio-semanal
+    name: "Relatorio Semanal"
+    block: relatorios
+    priority: ALTA
+    n8n_webhook: "webhook-test/rel-semanal"
+    supabase_tables:
+      - expenses
+      - calendar_events
+      - profiles
+    expected_behavior: "Gera relatorio semanal com resumo financeiro e agenda da semana"
+    test_scenarios:
+      - happy_path_semana_completa
+      - edge_case_semana_sem_dados
+      - edge_case_muitos_dados
+
+  - id: rel-relatorio-mensal
+    name: "Relatorio Mensal"
+    block: relatorios
+    priority: ALTA
+    n8n_webhook: "webhook-test/rel-mensal"
+    supabase_tables:
+      - expenses
+      - calendar_events
+      - investments
+      - profiles
+    expected_behavior: "Gera relatorio mensal completo com financeiro, agenda e investimentos"
+    test_scenarios:
+      - happy_path_mes_completo
+      - edge_case_mes_sem_dados
+      - edge_case_primeiro_mes_usuario
+
+  - id: rel-analytics-gastos
+    name: "Analytics de Gastos"
+    block: relatorios
+    priority: MEDIA
+    n8n_webhook: "webhook-test/rel-analytics-gastos"
+    supabase_tables:
+      - expenses
+    expected_behavior: "Analise detalhada de gastos por categoria, tendencias e comparacoes"
+    test_scenarios:
+      - happy_path_analytics_mensal
+      - edge_case_poucas_transacoes
+      - edge_case_categoria_unica
+
+  - id: rel-comparativo
+    name: "Comparativo de Periodos"
+    block: relatorios
+    priority: MEDIA
+    n8n_webhook: "webhook-test/rel-comparativo"
+    supabase_tables:
+      - expenses
+      - investments
+    expected_behavior: "Compara dois periodos (mes atual vs anterior) com variacoes percentuais"
+    test_scenarios:
+      - happy_path_comparativo_meses
+      - edge_case_sem_dados_anterior
+      - edge_case_primeiro_mes
+
+  # ============================================================
+  # BLOCO: PREMIUM (4 features)
+  # ============================================================
+
+  - id: prem-analytics-avancado
+    name: "Analytics Avancado (Premium)"
+    block: premium
+    priority: MEDIA
+    n8n_webhook: "webhook-test/prem-analytics"
+    supabase_tables:
+      - expenses
+      - investments
+      - subscriptions
+    expected_behavior: "Analytics avancado com projecoes, tendencias e insights personalizados"
+    test_scenarios:
+      - happy_path_analytics_premium
+      - edge_case_usuario_standard_tentando
+      - edge_case_poucos_dados_para_projecao
+
+  - id: prem-calendar-sync-full
+    name: "Sync Completa Calendar (Premium)"
+    block: premium
+    priority: ALTA
+    n8n_webhook: "webhook-test/prem-calendar-sync"
+    supabase_tables:
+      - calendar_events
+      - subscriptions
+      - profiles
+    expected_behavior: "Sincronizacao bidirecional completa com Google Calendar incluindo recorrencias"
+    test_scenarios:
+      - happy_path_sync_bidirecional
+      - edge_case_evento_recorrente
+      - error_usuario_standard
+
+  - id: prem-financeiro-completo
+    name: "Financeiro Completo (Premium)"
+    block: premium
+    priority: ALTA
+    n8n_webhook: "webhook-test/prem-financeiro"
+    supabase_tables:
+      - expenses
+      - investments
+      - financial_goals
+      - subscriptions
+    expected_behavior: "Gestao financeira completa com investimentos, metas e projecoes"
+    test_scenarios:
+      - happy_path_dashboard_financeiro
+      - edge_case_usuario_standard
+      - edge_case_sem_investimentos
+
+  - id: prem-exportar-pdf
+    name: "Exportar Relatorio PDF (Premium)"
+    block: premium
+    priority: BAIXA
+    n8n_webhook: "webhook-test/prem-exportar-pdf"
+    supabase_tables:
+      - expenses
+      - calendar_events
+      - subscriptions
+    expected_behavior: "Gera PDF do relatorio e envia via WhatsApp usando Gotenberg"
+    test_scenarios:
+      - happy_path_gerar_pdf
+      - error_usuario_standard
+      - error_gotenberg_indisponivel
+
+  # ============================================================
+  # BLOCO: SISTEMA (4 features)
+  # ============================================================
+
+  - id: sys-onboarding
+    name: "Onboarding de Novo Usuario"
+    block: sistema
+    priority: CRITICA
+    n8n_webhook: "webhook-test/sys-onboarding"
+    supabase_tables:
+      - profiles
+      - phones
+      - subscriptions
+    expected_behavior: "Fluxo completo de boas-vindas, verificacao de telefone e setup inicial"
+    test_scenarios:
+      - happy_path_novo_usuario
+      - edge_case_usuario_existente
+      - error_telefone_invalido
+
+  - id: sys-verificar-plano
+    name: "Verificar Plano do Usuario"
+    block: sistema
+    priority: ALTA
+    n8n_webhook: "webhook-test/sys-plano"
+    supabase_tables:
+      - subscriptions
+      - profiles
+    expected_behavior: "Retorna informacoes do plano atual do usuario (standard/premium)"
+    test_scenarios:
+      - happy_path_usuario_premium
+      - happy_path_usuario_standard
+      - edge_case_usuario_sem_plano
+
+  - id: sys-ajuda
+    name: "Menu de Ajuda"
+    block: sistema
+    priority: MEDIA
+    n8n_webhook: "webhook-test/sys-ajuda"
+    supabase_tables:
+      - profiles
+    expected_behavior: "Retorna menu de ajuda com lista de comandos e funcionalidades disponiveis"
+    test_scenarios:
+      - happy_path_menu_ajuda
+      - edge_case_ajuda_feature_especifica
+
+  - id: sys-rate-limit
+    name: "Rate Limiting"
+    block: sistema
+    priority: ALTA
+    n8n_webhook: "webhook-test/sys-rate-limit"
+    supabase_tables:
+      - bot_events
+      - profiles
+    expected_behavior: "Controla frequencia de mensagens e bloqueia spam com mensagem amigavel"
+    test_scenarios:
+      - happy_path_dentro_limite
+      - edge_case_no_limite
+      - error_acima_limite
