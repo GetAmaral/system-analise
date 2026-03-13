@@ -1,0 +1,554 @@
+# Cenarios de Teste Detalhados — Total Assistente
+# Cada cenario tem input, output esperado e verificacoes
+# Atualizado: 2026-03-13
+
+version: 1.0.0
+last_updated: "2026-03-13"
+
+# Nota: Os payloads simulam mensagens WhatsApp enviadas via webhook-test DEV
+# NUNCA usar /webhook/ (producao) — SOMENTE /webhook-test/
+
+scenarios:
+
+  # ============================================================
+  # AGENDA — Criar Evento
+  # ============================================================
+
+  - scenario_id: happy_path_criar_evento_simples
+    feature_id: agenda-criar-evento
+    type: happy_path
+    description: "Criar evento simples com data e hora"
+    input:
+      webhook_url: "webhook-test/agenda-criar"
+      method: POST
+      payload:
+        phone: "5511999990001"
+        message: "Marca reuniao amanha as 14h"
+        user_name: "TEST_Usuario_01"
+        user_id: "TEST_uid_001"
+    expected_output:
+      status_code: 200
+      response_contains:
+        - "evento"
+        - "criado"
+        - "14"
+      tone: "confirmacao amigavel"
+    verify_db:
+      table: calendar_events
+      conditions:
+        - column: user_id
+          operator: eq
+          value: "TEST_uid_001"
+        - column: summary
+          operator: ilike
+          value: "%reuniao%"
+      expected_fields:
+        start_time: "amanha 14:00 (America/Sao_Paulo)"
+        status: "active"
+    verify_gcal:
+      should_sync: true
+      expected_event:
+        summary: "reuniao"
+        start_time: "14:00"
+
+  - scenario_id: happy_path_criar_evento_com_descricao
+    feature_id: agenda-criar-evento
+    type: happy_path
+    description: "Criar evento com titulo e descricao detalhada"
+    input:
+      webhook_url: "webhook-test/agenda-criar"
+      method: POST
+      payload:
+        phone: "5511999990001"
+        message: "Cria evento: Consulta medica no dia 20/03 as 10h, levar exames e carteirinha"
+        user_name: "TEST_Usuario_01"
+        user_id: "TEST_uid_001"
+    expected_output:
+      status_code: 200
+      response_contains:
+        - "consulta"
+        - "20/03"
+        - "10"
+    verify_db:
+      table: calendar_events
+      conditions:
+        - column: user_id
+          operator: eq
+          value: "TEST_uid_001"
+        - column: summary
+          operator: ilike
+          value: "%consulta%"
+      expected_fields:
+        start_time: "2026-03-20 10:00"
+        description: "levar exames e carteirinha"
+    verify_gcal:
+      should_sync: true
+
+  - scenario_id: edge_case_evento_feriado
+    feature_id: agenda-criar-evento
+    type: edge_case
+    description: "Criar evento em dia de feriado"
+    input:
+      webhook_url: "webhook-test/agenda-criar"
+      method: POST
+      payload:
+        phone: "5511999990001"
+        message: "Marca evento no dia 25/12 as 10h"
+        user_name: "TEST_Usuario_01"
+        user_id: "TEST_uid_001"
+    expected_output:
+      status_code: 200
+      response_contains:
+        - "evento"
+        - "criado"
+      notes: "Deve funcionar normalmente mesmo em feriado"
+    verify_db:
+      table: calendar_events
+      conditions:
+        - column: user_id
+          operator: eq
+          value: "TEST_uid_001"
+
+  - scenario_id: edge_case_evento_fim_de_semana
+    feature_id: agenda-criar-evento
+    type: edge_case
+    description: "Criar evento no sabado"
+    input:
+      webhook_url: "webhook-test/agenda-criar"
+      method: POST
+      payload:
+        phone: "5511999990001"
+        message: "Cria evento sabado que vem as 15h: churrasco na casa do Joao"
+        user_name: "TEST_Usuario_01"
+        user_id: "TEST_uid_001"
+    expected_output:
+      status_code: 200
+      response_contains:
+        - "sabado"
+        - "churrasco"
+    verify_db:
+      table: calendar_events
+      conditions:
+        - column: user_id
+          operator: eq
+          value: "TEST_uid_001"
+        - column: summary
+          operator: ilike
+          value: "%churrasco%"
+
+  - scenario_id: error_data_passada
+    feature_id: agenda-criar-evento
+    type: error
+    description: "Tentar criar evento em data passada"
+    input:
+      webhook_url: "webhook-test/agenda-criar"
+      method: POST
+      payload:
+        phone: "5511999990001"
+        message: "Marca reuniao ontem as 10h"
+        user_name: "TEST_Usuario_01"
+        user_id: "TEST_uid_001"
+    expected_output:
+      status_code: 200
+      response_contains:
+        - "passad"
+      tone: "erro amigavel com sugestao"
+    verify_db:
+      table: calendar_events
+      should_not_create: true
+
+  - scenario_id: error_conflito_horario
+    feature_id: agenda-criar-evento
+    type: error
+    description: "Tentar criar evento em horario ja ocupado"
+    input:
+      webhook_url: "webhook-test/agenda-criar"
+      method: POST
+      payload:
+        phone: "5511999990001"
+        message: "Marca outro evento amanha as 14h"
+        user_name: "TEST_Usuario_01"
+        user_id: "TEST_uid_001"
+    expected_output:
+      status_code: 200
+      response_contains:
+        - "conflito"
+      tone: "alerta com opcoes"
+      notes: "Requer que happy_path_criar_evento_simples tenha sido executado antes"
+
+  # ============================================================
+  # AGENDA — Listar Eventos
+  # ============================================================
+
+  - scenario_id: happy_path_listar_hoje
+    feature_id: agenda-listar-eventos
+    type: happy_path
+    description: "Listar eventos de hoje"
+    input:
+      webhook_url: "webhook-test/agenda-listar"
+      method: POST
+      payload:
+        phone: "5511999990001"
+        message: "Quais meus eventos de hoje?"
+        user_name: "TEST_Usuario_01"
+        user_id: "TEST_uid_001"
+    expected_output:
+      status_code: 200
+      response_contains:
+        - "evento"
+        - "hoje"
+      format: "lista formatada com horarios"
+    verify_db:
+      table: calendar_events
+      conditions:
+        - column: user_id
+          operator: eq
+          value: "TEST_uid_001"
+
+  - scenario_id: happy_path_listar_semana
+    feature_id: agenda-listar-eventos
+    type: happy_path
+    description: "Listar eventos da semana"
+    input:
+      webhook_url: "webhook-test/agenda-listar"
+      method: POST
+      payload:
+        phone: "5511999990001"
+        message: "Me mostra minha agenda da semana"
+        user_name: "TEST_Usuario_01"
+        user_id: "TEST_uid_001"
+    expected_output:
+      status_code: 200
+      response_contains:
+        - "semana"
+      format: "lista formatada agrupada por dia"
+
+  - scenario_id: happy_path_listar_mes
+    feature_id: agenda-listar-eventos
+    type: happy_path
+    description: "Listar eventos do mes"
+    input:
+      webhook_url: "webhook-test/agenda-listar"
+      method: POST
+      payload:
+        phone: "5511999990001"
+        message: "Agenda do mes"
+        user_name: "TEST_Usuario_01"
+        user_id: "TEST_uid_001"
+    expected_output:
+      status_code: 200
+      format: "lista ou resumo do mes"
+
+  - scenario_id: edge_case_sem_eventos
+    feature_id: agenda-listar-eventos
+    type: edge_case
+    description: "Listar quando nao ha eventos"
+    input:
+      webhook_url: "webhook-test/agenda-listar"
+      method: POST
+      payload:
+        phone: "5511999990002"
+        message: "Meus eventos de hoje"
+        user_name: "TEST_Usuario_Vazio"
+        user_id: "TEST_uid_002"
+    expected_output:
+      status_code: 200
+      response_contains:
+        - "nenhum"
+      tone: "informativo amigavel"
+
+  - scenario_id: edge_case_muitos_eventos
+    feature_id: agenda-listar-eventos
+    type: edge_case
+    description: "Listar quando ha muitos eventos (10+)"
+    input:
+      webhook_url: "webhook-test/agenda-listar"
+      method: POST
+      payload:
+        phone: "5511999990003"
+        message: "Me mostra todos os eventos do mes"
+        user_name: "TEST_Usuario_Cheio"
+        user_id: "TEST_uid_003"
+    expected_output:
+      status_code: 200
+      notes: "Deve paginar ou resumir se muitos eventos"
+
+  # ============================================================
+  # FINANCEIRO — Registrar Despesa
+  # ============================================================
+
+  - scenario_id: happy_path_despesa_simples
+    feature_id: fin-registrar-despesa
+    type: happy_path
+    description: "Registrar despesa simples"
+    input:
+      webhook_url: "webhook-test/fin-despesa"
+      method: POST
+      payload:
+        phone: "5511999990001"
+        message: "Gastei 50 reais no almoco"
+        user_name: "TEST_Usuario_01"
+        user_id: "TEST_uid_001"
+    expected_output:
+      status_code: 200
+      response_contains:
+        - "R$ 50"
+        - "registr"
+        - "almoco"
+      tone: "confirmacao amigavel"
+    verify_db:
+      table: expenses
+      conditions:
+        - column: user_id
+          operator: eq
+          value: "TEST_uid_001"
+        - column: description
+          operator: ilike
+          value: "%almoco%"
+      expected_fields:
+        amount: 50.00
+        type: "expense"
+    verify_gcal:
+      should_sync: false
+
+  - scenario_id: happy_path_despesa_com_categoria
+    feature_id: fin-registrar-despesa
+    type: happy_path
+    description: "Registrar despesa com categoria especifica"
+    input:
+      webhook_url: "webhook-test/fin-despesa"
+      method: POST
+      payload:
+        phone: "5511999990001"
+        message: "Paguei R$ 150,00 de conta de luz, categoria casa"
+        user_name: "TEST_Usuario_01"
+        user_id: "TEST_uid_001"
+    expected_output:
+      status_code: 200
+      response_contains:
+        - "R$ 150"
+        - "luz"
+        - "casa"
+    verify_db:
+      table: expenses
+      conditions:
+        - column: user_id
+          operator: eq
+          value: "TEST_uid_001"
+      expected_fields:
+        amount: 150.00
+        category: "casa"
+
+  - scenario_id: edge_case_valor_centavos
+    feature_id: fin-registrar-despesa
+    type: edge_case
+    description: "Registrar despesa com centavos"
+    input:
+      webhook_url: "webhook-test/fin-despesa"
+      method: POST
+      payload:
+        phone: "5511999990001"
+        message: "Gastei 3,50 no cafe"
+        user_name: "TEST_Usuario_01"
+        user_id: "TEST_uid_001"
+    expected_output:
+      status_code: 200
+      response_contains:
+        - "R$ 3,50"
+    verify_db:
+      table: expenses
+      expected_fields:
+        amount: 3.50
+
+  - scenario_id: edge_case_valor_alto
+    feature_id: fin-registrar-despesa
+    type: edge_case
+    description: "Registrar despesa com valor alto"
+    input:
+      webhook_url: "webhook-test/fin-despesa"
+      method: POST
+      payload:
+        phone: "5511999990001"
+        message: "Paguei 15000 de aluguel"
+        user_name: "TEST_Usuario_01"
+        user_id: "TEST_uid_001"
+    expected_output:
+      status_code: 200
+      response_contains:
+        - "R$ 15.000"
+    verify_db:
+      table: expenses
+      expected_fields:
+        amount: 15000.00
+
+  - scenario_id: error_valor_negativo
+    feature_id: fin-registrar-despesa
+    type: error
+    description: "Tentar registrar despesa com valor negativo"
+    input:
+      webhook_url: "webhook-test/fin-despesa"
+      method: POST
+      payload:
+        phone: "5511999990001"
+        message: "Gastei -50 reais"
+        user_name: "TEST_Usuario_01"
+        user_id: "TEST_uid_001"
+    expected_output:
+      status_code: 200
+      tone: "erro amigavel"
+    verify_db:
+      table: expenses
+      should_not_create: true
+
+  - scenario_id: error_valor_zero
+    feature_id: fin-registrar-despesa
+    type: error
+    description: "Tentar registrar despesa com valor zero"
+    input:
+      webhook_url: "webhook-test/fin-despesa"
+      method: POST
+      payload:
+        phone: "5511999990001"
+        message: "Gastei 0 reais no supermercado"
+        user_name: "TEST_Usuario_01"
+        user_id: "TEST_uid_001"
+    expected_output:
+      status_code: 200
+      tone: "erro amigavel ou pedido de confirmacao"
+    verify_db:
+      table: expenses
+      should_not_create: true
+
+  # ============================================================
+  # SISTEMA — Onboarding
+  # ============================================================
+
+  - scenario_id: happy_path_novo_usuario
+    feature_id: sys-onboarding
+    type: happy_path
+    description: "Primeiro contato de novo usuario"
+    input:
+      webhook_url: "webhook-test/sys-onboarding"
+      method: POST
+      payload:
+        phone: "5511999990099"
+        message: "Oi"
+        user_name: "TEST_Novo_Usuario"
+        user_id: "TEST_uid_099"
+    expected_output:
+      status_code: 200
+      response_contains:
+        - "bem-vindo"
+      tone: "boas-vindas calorosas"
+    verify_db:
+      table: profiles
+      conditions:
+        - column: id
+          operator: eq
+          value: "TEST_uid_099"
+    verify_gcal:
+      should_sync: false
+
+  - scenario_id: edge_case_usuario_existente
+    feature_id: sys-onboarding
+    type: edge_case
+    description: "Usuario existente envia 'Oi' novamente"
+    input:
+      webhook_url: "webhook-test/sys-onboarding"
+      method: POST
+      payload:
+        phone: "5511999990001"
+        message: "Oi"
+        user_name: "TEST_Usuario_01"
+        user_id: "TEST_uid_001"
+    expected_output:
+      status_code: 200
+      notes: "Nao deve duplicar perfil, deve reconhecer usuario existente"
+    verify_db:
+      table: profiles
+      conditions:
+        - column: id
+          operator: eq
+          value: "TEST_uid_001"
+      should_not_duplicate: true
+
+  - scenario_id: error_telefone_invalido
+    feature_id: sys-onboarding
+    type: error
+    description: "Contato com telefone em formato invalido"
+    input:
+      webhook_url: "webhook-test/sys-onboarding"
+      method: POST
+      payload:
+        phone: "123"
+        message: "Oi"
+        user_name: "TEST_Invalido"
+        user_id: "TEST_uid_invalid"
+    expected_output:
+      status_code: 200
+      tone: "erro tratado graciosamente"
+
+  # ============================================================
+  # SISTEMA — Rate Limit
+  # ============================================================
+
+  - scenario_id: happy_path_dentro_limite
+    feature_id: sys-rate-limit
+    type: happy_path
+    description: "Mensagem dentro do limite de rate"
+    input:
+      webhook_url: "webhook-test/sys-rate-limit"
+      method: POST
+      payload:
+        phone: "5511999990001"
+        message: "Meu saldo"
+        user_name: "TEST_Usuario_01"
+        user_id: "TEST_uid_001"
+    expected_output:
+      status_code: 200
+      notes: "Deve processar normalmente"
+    verify_db:
+      table: bot_events
+      conditions:
+        - column: phone
+          operator: eq
+          value: "5511999990001"
+
+  - scenario_id: edge_case_no_limite
+    feature_id: sys-rate-limit
+    type: edge_case
+    description: "Mensagem no limite exato de rate"
+    input:
+      webhook_url: "webhook-test/sys-rate-limit"
+      method: POST
+      payload:
+        phone: "5511999990001"
+        message: "Meu saldo"
+        user_name: "TEST_Usuario_01"
+        user_id: "TEST_uid_001"
+      repeat: 10
+    expected_output:
+      notes: "Ultimas mensagens devem ser rejeitadas com aviso"
+
+  - scenario_id: error_acima_limite
+    feature_id: sys-rate-limit
+    type: error
+    description: "Mensagens acima do limite de rate"
+    input:
+      webhook_url: "webhook-test/sys-rate-limit"
+      method: POST
+      payload:
+        phone: "5511999990001"
+        message: "Teste spam"
+        user_name: "TEST_Usuario_01"
+        user_id: "TEST_uid_001"
+      repeat: 20
+    expected_output:
+      status_code: 200
+      response_contains:
+        - "limite"
+      tone: "aviso amigavel de rate limit"
+
+# Nota: Cenarios adicionais para as demais features devem ser adicionados
+# conforme o catalogo de features e os testes sao refinados.
+# Cada feature deve ter pelo menos: 1 happy_path, 1 edge_case, 1 error
